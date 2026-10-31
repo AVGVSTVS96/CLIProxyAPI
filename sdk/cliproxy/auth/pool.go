@@ -348,21 +348,22 @@ func poolAfterPick(opts cliproxyexecutor.Options, auths []*Auth, auth *Auth, quo
 	if !isClaudeAuth(auth) {
 		return auth
 	}
-	if !quota {
-		claudePool.seat(opts.Headers, auth)
-		return auth
-	}
-	if rest := claudePool.moveAway(auth, auths); rest != nil {
-		if moved, err := pick(rest); err == nil && moved != nil {
-			log.Infof("pool: moving session off %s, nearing its limits, to %s", metaString(auth, "email"), metaString(moved, "email"))
-			auth = moved
+	cause := "limit"
+	if quota {
+		if rest, level := claudePool.moveAway(auth, auths); rest != nil {
+			if moved, err := pick(rest); err == nil && moved != nil {
+				log.Infof("pool: moving session off %s, nearing its limits, to %s", metaString(auth, "email"), metaString(moved, "email"))
+				auth, cause = moved, level
+			}
 		}
 	}
-	claudePool.seat(opts.Headers, auth)
+	claudePool.seat(opts.Headers, auth, cause)
 	return auth
 }
 
-func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth) []*Auth {
+// moveAway returns the other accounts and "over" (past a cutoff) or "early" (nearing one)
+// when the session should leave auth for a clearer account.
+func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth) ([]*Auth, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cfg, now := p.cfg, time.Now()
@@ -377,12 +378,12 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth) []*Auth {
 		}
 	}
 	if mine == nil {
-		return nil
+		return nil, ""
 	}
 	urgent := !mine.Usable
 	soon := mine.five >= cfg.SessionCutoff-poolMargin || cfg.WeeklyCutoff-mine.week < 5
 	if !urgent && !soon {
-		return nil
+		return nil, ""
 	}
 	better := false
 	for _, r := range rows {
@@ -391,7 +392,7 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth) []*Auth {
 		}
 	}
 	if !better {
-		return nil
+		return nil, ""
 	}
 	rest := make([]*Auth, 0, len(auths))
 	for _, a := range auths {
@@ -399,10 +400,15 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth) []*Auth {
 			rest = append(rest, a)
 		}
 	}
-	return rest
+	if urgent {
+		return rest, "over"
+	}
+	return rest, "early"
 }
 
-func (p *claudePoolState) seat(headers http.Header, auth *Auth) {
+// seat records the account a Claude Code session runs on: "start" for its first binding,
+// "failure" when it changes, with why (limit, early, over).
+func (p *claudePoolState) seat(headers http.Header, auth *Auth, cause string) {
 	sessionID := strings.ToLower(strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")))
 	if !sessionIDPattern.MatchString(sessionID) {
 		return
@@ -413,7 +419,11 @@ func (p *claudePoolState) seat(headers http.Header, auth *Auth) {
 	now := time.Now()
 	seat := p.sessions[sessionID]
 	if seat == nil || seat.account != account {
-		p.appendLocked("attribution.ndjson", map[string]any{"at": now.UTC().Format(time.RFC3339Nano), "sessionId": sessionID, "accountId": account, "event": "start"})
+		row := map[string]any{"at": now.UTC().Format(time.RFC3339Nano), "sessionId": sessionID, "accountId": account, "event": "start"}
+		if seat != nil {
+			row["event"], row["from"], row["cause"] = "failure", seat.account, cause
+		}
+		p.appendLocked("attribution.ndjson", row)
 		seat = &poolSeat{account: account}
 		p.sessions[sessionID] = seat
 	}
@@ -730,11 +740,19 @@ type PoolSnapshot struct {
 	Decision         string    `json:"decision"`
 }
 
-// PoolSnapshot ranks the manager's Claude accounts for the dashboard.
-func (m *Manager) PoolSnapshot() PoolSnapshot {
+// PoolSnapshot ranks the manager's Claude accounts for the dashboard. A non-nil preview
+// ranks them under proposed settings without applying them.
+func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 	auths := m.List()
 	claudePool.mu.Lock()
 	defer claudePool.mu.Unlock()
+	if preview != nil {
+		saved := claudePool.cfg
+		next := saved
+		next.SessionCutoff, next.WeeklyCutoff, next.AgentsPerAccount = preview.SessionCutoff, preview.WeeklyCutoff, preview.AgentsPerAccount
+		claudePool.cfg = normalizePoolConfig(next)
+		defer func() { claudePool.cfg = saved }()
+	}
 	cfg := claudePool.cfg
 	enabled := make([]*Auth, 0, len(auths))
 	for _, a := range auths {

@@ -74,14 +74,14 @@ func TestQuotaSelectorPrefersAnAccountHoldingAReset(t *testing.T) {
 func TestMoveAwayLeavesAnAccountNearItsCutoffOnlyForAClearOne(t *testing.T) {
 	resetPool(t)
 	hot, calm := poolAuth("hot", 85, 30, 48*time.Hour), poolAuth("calm", 10, 30, 48*time.Hour)
-	if rest := claudePool.moveAway(hot, []*Auth{hot, calm}); len(rest) != 1 || rest[0].ID != "calm" {
+	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}); len(rest) != 1 || rest[0].ID != "calm" || level != "early" {
 		t.Fatalf("rest = %v, want only calm", rest)
 	}
 	warm := poolAuth("warm", 82, 30, 48*time.Hour)
-	if rest := claudePool.moveAway(hot, []*Auth{hot, warm}); rest != nil {
+	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, warm}); rest != nil {
 		t.Fatalf("moved to an account that is no clearer: %v", rest)
 	}
-	if rest := claudePool.moveAway(calm, []*Auth{hot, calm}); rest != nil {
+	if rest, _ := claudePool.moveAway(calm, []*Auth{hot, calm}); rest != nil {
 		t.Fatalf("moved a session off a calm account: %v", rest)
 	}
 }
@@ -90,13 +90,13 @@ func TestSeatRecordsEachSessionsAccountOncePerChange(t *testing.T) {
 	dir := resetPool(t)
 	headers := http.Header{"X-Claude-Code-Session-Id": []string{"51933568-42b8-4c8e-bc44-2bed00731a66"}}
 	a, b := poolAuth("a", 1, 1, time.Hour), poolAuth("b", 1, 1, time.Hour)
-	claudePool.seat(headers, a)
-	claudePool.seat(headers, a)
-	claudePool.seat(headers, b)
-	claudePool.seat(http.Header{"X-Claude-Code-Session-Id": []string{"not-a-session"}}, a)
+	claudePool.seat(headers, a, "limit")
+	claudePool.seat(headers, a, "limit")
+	claudePool.seat(headers, b, "early")
+	claudePool.seat(http.Header{"X-Claude-Code-Session-Id": []string{"not-a-session"}}, a, "limit")
 	data, _ := os.ReadFile(filepath.Join(dir, "attribution.ndjson"))
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], `"accountId":"a"`) || !strings.Contains(lines[1], `"accountId":"b"`) || !strings.Contains(lines[1], `"event":"start"`) {
+	if len(lines) != 2 || !strings.Contains(lines[0], `"accountId":"a"`) || !strings.Contains(lines[1], `"accountId":"b"`) || !strings.Contains(lines[1], `"event":"failure"`) || !strings.Contains(lines[1], `"cause":"early"`) {
 		t.Fatalf("attribution = %q", lines)
 	}
 }
@@ -110,7 +110,7 @@ func TestSnapshotNeverCarriesATokenAndHistoryLogsMoves(t *testing.T) {
 		t.Fatal(err)
 	}
 	claudePool.sample(context.Background(), m.List())
-	snap := m.PoolSnapshot()
+	snap := m.PoolSnapshot(nil)
 	if len(snap.Accounts) != 1 || snap.Accounts[0].Reading.Week == nil || snap.Accounts[0].Reading.Week.Used != 40 {
 		t.Fatalf("snapshot = %+v", snap)
 	}
