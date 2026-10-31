@@ -101,6 +101,7 @@ func (s *Service) Run(ctx context.Context) error {
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
+		coreauth.StartPoolSampler(ctx, s.coreManager)
 	}
 
 	if !homeEnabled {

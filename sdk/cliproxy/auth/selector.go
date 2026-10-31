@@ -1098,6 +1098,15 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
 // that may be supported by different auth credentials, and to avoid cross-provider conflicts.
 func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	auth, err := s.pick(ctx, provider, model, opts, auths)
+	if err != nil || auth == nil {
+		return auth, err
+	}
+	_, quota := s.fallback.(*QuotaSelector)
+	return poolAfterPick(opts, auths, auth, quota, func(rest []*Auth) (*Auth, error) { return s.pick(ctx, provider, model, opts, rest) }), nil
+}
+
+func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	entry := selectorLogEntry(ctx)
 	if opts.Metadata == nil {
 		opts.Metadata = make(map[string]any)

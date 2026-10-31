@@ -134,7 +134,9 @@ type tokenResponse struct {
 	RefreshToken string `json:"refresh_token"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
-	Organization struct {
+	// RefreshTokenExpiresIn is how long until the login itself expires and needs a fresh sign-in.
+	RefreshTokenExpiresIn int `json:"refresh_token_expires_in"`
+	Organization          struct {
 		UUID string `json:"uuid"`
 		Name string `json:"name"`
 	} `json:"organization"`
@@ -447,6 +449,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 		OrganizationUUID: tokenResp.Organization.UUID,
 		OrganizationName: tokenResp.Organization.Name,
 		Expire:           time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
+		RefreshExpire:    refreshExpiry(tokenResp.RefreshTokenExpiresIn),
 	}
 
 	// Replay the native login companion lookups and let the profile response win
@@ -584,9 +587,10 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 		tokenResp.RefreshToken = refreshToken
 	}
 	tokenData := &ClaudeTokenData{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
+		AccessToken:   tokenResp.AccessToken,
+		RefreshToken:  tokenResp.RefreshToken,
+		Expire:        time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
+		RefreshExpire: refreshExpiry(tokenResp.RefreshTokenExpiresIn),
 	}
 	profile, errProfile := o.FetchOAuthProfile(ctx, tokenResp.AccessToken)
 	if errProfile != nil {
@@ -620,6 +624,7 @@ func (o *ClaudeAuth) CreateTokenStorage(bundle *ClaudeAuthBundle) *ClaudeTokenSt
 		OrganizationName: bundle.TokenData.OrganizationName,
 		DeviceIDs:        append([]string(nil), bundle.DeviceIDs...),
 		Expire:           bundle.TokenData.Expire,
+		RefreshExpire:    bundle.TokenData.RefreshExpire,
 	}
 
 	return storage
@@ -689,4 +694,11 @@ func (o *ClaudeAuth) UpdateTokenStorage(storage *ClaudeTokenStorage, tokenData *
 		storage.OrganizationName = tokenData.OrganizationName
 	}
 	storage.Expire = tokenData.Expire
+}
+
+func refreshExpiry(seconds int) string {
+	if seconds <= 0 {
+		return ""
+	}
+	return time.Now().Add(time.Duration(seconds) * time.Second).Format(time.RFC3339)
 }

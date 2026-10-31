@@ -25,6 +25,8 @@ type ClaudeTokenData struct {
 	OrganizationName string `json:"organization_name"`
 	// Expire is the timestamp of the token expiry.
 	Expire string `json:"expired"`
+	// RefreshExpire is when the login expires and needs a fresh sign-in, when Anthropic says.
+	RefreshExpire string `json:"refresh_expired,omitempty"`
 }
 
 // ClaudeAuthBundle aggregates authentication data after OAuth flow completion

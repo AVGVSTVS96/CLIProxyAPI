@@ -176,6 +176,7 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 	claudeauth.StoreMetadataString(&auth.Metadata, "organization_uuid", td.OrganizationUUID)
 	claudeauth.StoreMetadataString(&auth.Metadata, "organization_name", td.OrganizationName)
 	claudeauth.StoreMetadataValue(&auth.Metadata, "expired", td.Expire)
+	claudeauth.StoreMetadataString(&auth.Metadata, "refresh_expired", td.RefreshExpire)
 	claudeauth.StoreMetadataValue(&auth.Metadata, "type", "claude")
 	claudeauth.StoreMetadataValue(&auth.Metadata, "last_refresh", time.Now().Format(time.RFC3339))
 	return auth, nil

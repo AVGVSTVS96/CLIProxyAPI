@@ -160,7 +160,18 @@ access:
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
-  strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first
+  strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first, quota
+  # quota (Claude subscriptions): spend every account's weekly limit before it resets without
+  # letting any one hit its five-hour limit. New sessions go to the account under both cutoffs
+  # whose remaining week runs out soonest (an account holding a limit reset first); with
+  # session-affinity on, a session moves off an account nearing a cutoff when another is clear.
+  # Held resets are read, never spent.
+  # pool:
+  #   session-cutoff: 90          # five-hour percent past which an account takes no new work
+  #   weekly-cutoff: 98           # weekly percent past which an account takes no new work
+  #   agents-per-account: 100     # working sessions a fresh account takes before it counts as crowded
+  #   state-dir: ""               # writes usage-history.ndjson, attribution.ndjson, resets/, plans/
+  #   accounts-file: ""           # writes {"accounts":[{id,email,tier,needsReauth}]}
   # weighted-round-robin uses each credential's integer weight (default 1, maximum 1,000,000).
   # Non-positive weights exclude the credential while this strategy is active.
   # For OAuth/file credentials, add a top-level numeric "weight" field to the auth JSON.

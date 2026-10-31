@@ -487,6 +487,24 @@ type RoutingConfig struct {
 	//     auth errors (429, 401/402/403, 404/model support, invalid_grant) rebind as normal.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
+
+	// Pool tunes the "quota" strategy for Claude subscriptions.
+	Pool PoolConfig `yaml:"pool,omitempty" json:"pool,omitempty"`
+}
+
+// PoolConfig tunes the "quota" strategy, which spends every Claude account's weekly
+// limit before it resets without letting any one hit its five-hour limit.
+type PoolConfig struct {
+	// SessionCutoff is the five-hour usage percent past which an account takes no new work. Default 90.
+	SessionCutoff float64 `yaml:"session-cutoff,omitempty" json:"session-cutoff,omitempty"`
+	// WeeklyCutoff is the weekly usage percent past which an account takes no new work. Default 98.
+	WeeklyCutoff float64 `yaml:"weekly-cutoff,omitempty" json:"weekly-cutoff,omitempty"`
+	// AgentsPerAccount is how many working sessions a fresh account takes before it counts as crowded. Default 100.
+	AgentsPerAccount int `yaml:"agents-per-account,omitempty" json:"agents-per-account,omitempty"`
+	// StateDir receives usage-history.ndjson, attribution.ndjson, resets/ and plans/. Empty writes nothing.
+	StateDir string `yaml:"state-dir,omitempty" json:"state-dir,omitempty"`
+	// AccountsFile receives the account list as {"accounts":[{id,email,tier,needsReauth}]}. Empty writes nothing.
+	AccountsFile string `yaml:"accounts-file,omitempty" json:"accounts-file,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
