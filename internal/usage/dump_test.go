@@ -43,3 +43,25 @@ func TestDumpCollection(t *testing.T) {
 	retracted, _ := json.Marshal(collection.RetractedIDs)
 	_ = os.WriteFile(out+".retracted.json", retracted, 0o644)
 }
+
+// TestDumpStore writes a store's Events and Devices: USAGE_STORE=<state dir copy> USAGE_STORE_OUT=<prefix>
+func TestDumpStore(t *testing.T) {
+	dir, out := os.Getenv("USAGE_STORE"), os.Getenv("USAGE_STORE_OUT")
+	if dir == "" || out == "" {
+		t.Skip("USAGE_STORE not set")
+	}
+	store, err := OpenStore(dir, os.Getenv("USAGE_DUMP_DEVICE"), "server", NewPricing(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, _ := os.Create(out + "events.ndjson")
+	w := bufio.NewWriter(file)
+	for _, e := range store.Events() {
+		data, _ := json.Marshal(e)
+		w.Write(append(data, '\n'))
+	}
+	w.Flush()
+	file.Close()
+	devices, _ := json.MarshalIndent(store.Devices(), "", "  ")
+	_ = os.WriteFile(out+"devices.json", devices, 0o644)
+}

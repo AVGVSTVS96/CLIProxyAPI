@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"hash/maphash"
 	"io"
 	"math"
@@ -76,11 +75,20 @@ func Push(ctx context.Context, cfg config.UsageConfig, serverURL string) error {
 				log.Debugf("usage: pushed %d records and %d withdrawals", len(changed), len(deleted))
 				return
 			}
-			log.WithError(err).Warn("usage: push failed; retrying")
+			wait := backoff
+			var status statusError
+			if errors.As(err, &status) && (status.code == http.StatusUnauthorized || status.code == http.StatusForbidden) {
+				// Each rejected key counts toward the server's lockout of this machine's address.
+				wait = time.Hour
+				if status.code == http.StatusForbidden {
+					wait = 31 * time.Minute
+				}
+			}
+			log.WithError(err).Warnf("usage: push failed; retrying in %s", wait)
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(wait):
 			}
 		}
 	}
@@ -173,10 +181,17 @@ func postBatch(ctx context.Context, endpoint, key string, batch Batch) error {
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-		return fmt.Errorf("%s: %s", response.Status, strings.TrimSpace(string(message)))
+		return statusError{response.StatusCode, response.Status + ": " + strings.TrimSpace(string(message))}
 	}
 	return nil
 }
+
+type statusError struct {
+	code    int
+	message string
+}
+
+func (e statusError) Error() string { return e.message }
 
 // IngestHandler stores a batch another machine pushed. It sits behind management auth.
 func IngestHandler(c *gin.Context) {
