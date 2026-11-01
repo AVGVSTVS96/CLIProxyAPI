@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -73,6 +74,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/api-call", s.mgmt.APICall)
 		mgmt.GET("/pool", s.mgmt.GetPool)
 		mgmt.GET("/pool/history", s.mgmt.GetPoolHistory)
+		mgmt.POST("/usage/events", usage.IngestHandler)
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)

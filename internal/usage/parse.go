@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -357,7 +358,37 @@ func parseClaude(r io.Reader, file string) (*parsedFile, error) {
 		}
 	}
 	parsed.SessionTitle = title
+	parsed.Events = collapseRepeats(parsed.Events)
 	return parsed, err
+}
+
+// collapseRepeats keeps one candidate per id and sidechain flag within a file: Claude
+// writes a message's usage once per content block. The kept one is the first with the
+// largest total, which is what deduplication would pick, at its first position.
+func collapseRepeats(events []*candidate) []*candidate {
+	type key struct {
+		id        string
+		sidechain bool
+	}
+	index := make(map[key]int, len(events))
+	kept := events[:0]
+	for _, entry := range events {
+		k := key{entry.Event.ID, entry.Sidechain}
+		i, ok := index[k]
+		if !ok {
+			index[k] = len(kept)
+			kept = append(kept, entry)
+			continue
+		}
+		if tokenTotal(&entry.Event) > tokenTotal(&kept[i].Event) {
+			if entry.LegacyEventID == "" {
+				entry.LegacyEventID = kept[i].LegacyEventID
+			}
+			kept[i] = entry
+		}
+	}
+	clear(events[len(kept):])
+	return slices.Clip(kept)
 }
 
 // tierOf is a Claude usage block's service tier; speed "fast" is priority.

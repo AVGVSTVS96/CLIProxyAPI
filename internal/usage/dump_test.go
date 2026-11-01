@@ -18,7 +18,7 @@ func TestDumpCollection(t *testing.T) {
 		t.Skip("USAGE_DUMP not set")
 	}
 	pricing := NewPricing(os.Getenv("USAGE_DUMP_PRICING"))
-	c := NewCollector(Sources{DeviceID: os.Getenv("USAGE_DUMP_DEVICE"), CacheDir: os.Getenv("USAGE_DUMP_CACHE")}, pricing)
+	c := NewCollector(Sources{DeviceID: os.Getenv("USAGE_DUMP_DEVICE")}, pricing)
 	started := time.Now()
 	collection := c.Collect(context.Background())
 	elapsed := time.Since(started)

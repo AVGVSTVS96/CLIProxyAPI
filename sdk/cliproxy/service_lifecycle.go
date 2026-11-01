@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	agentusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -102,6 +103,13 @@ func (s *Service) Run(ctx context.Context) error {
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 		coreauth.StartPoolSampler(ctx, s.coreManager)
+	}
+	if cfg != nil && cfg.Usage.StateDir != "" {
+		go func() {
+			if errUsage := agentusage.Run(ctx, cfg.Usage); errUsage != nil {
+				log.Errorf("usage collection stopped: %v", errUsage)
+			}
+		}()
 	}
 
 	if !homeEnabled {

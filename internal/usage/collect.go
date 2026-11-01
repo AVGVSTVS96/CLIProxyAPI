@@ -1,16 +1,13 @@
 package usage
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/gob"
-	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -28,7 +25,6 @@ type Sources struct {
 	Muse       []string
 	T3Data     string
 	T3URL      string
-	CacheDir   string
 	DeviceID   string
 	MaxWorkers int
 }
@@ -44,7 +40,7 @@ type cachedFile struct {
 }
 
 // Collector reads one machine's logs. Each Collect re-parses only files whose signature
-// changed since the last one, keeping parsed files in memory and in CacheDir.
+// changed since the last one, keeping what deduplication needs from each file in memory.
 type Collector struct {
 	opts    Sources
 	sources []source
@@ -162,9 +158,6 @@ func NewCollector(opts Sources, pricing *Pricing) *Collector {
 	if c.opts.T3URL == "" {
 		c.opts.T3URL = "https://app.t3.codes"
 	}
-	if c.opts.CacheDir != "" {
-		c.opts.CacheDir = expand(c.opts.CacheDir)
-	}
 	return c
 }
 
@@ -247,62 +240,6 @@ func parseFile(f logFile) *parsedFile {
 	return parsed
 }
 
-func (c *Collector) cachePath(harness, file string) string {
-	sum := sha256.Sum256([]byte(harness + ":" + file))
-	return filepath.Join(c.opts.CacheDir, hex.EncodeToString(sum[:])+".gob")
-}
-
-type diskEntry struct {
-	Version   int
-	Signature string
-	File      *parsedFile
-}
-
-const cacheVersion = 1
-
-func (c *Collector) readCache(f logFile) *parsedFile {
-	if c.opts.CacheDir == "" {
-		return nil
-	}
-	data, err := os.ReadFile(c.cachePath(f.harness, f.path))
-	if err != nil {
-		return nil
-	}
-	var entry diskEntry
-	if gob.NewDecoder(bytes.NewReader(data)).Decode(&entry) != nil || entry.Version != cacheVersion ||
-		entry.Signature != f.signature || entry.File == nil {
-		return nil
-	}
-	return entry.File
-}
-
-func (c *Collector) writeCache(f logFile, parsed *parsedFile) {
-	if c.opts.CacheDir == "" {
-		return
-	}
-	var buf bytes.Buffer
-	if gob.NewEncoder(&buf).Encode(diskEntry{Version: cacheVersion, Signature: f.signature, File: parsed}) != nil {
-		return
-	}
-	_ = writeFileAtomic(c.cachePath(f.harness, f.path), buf.Bytes())
-}
-
-// pruneCache removes entries for logs that moved or disappeared.
-func (c *Collector) pruneCache(retained map[string]bool) {
-	if c.opts.CacheDir == "" {
-		return
-	}
-	entries, err := os.ReadDir(c.opts.CacheDir)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if name := entry.Name(); strings.HasSuffix(name, ".gob") && !retained[name] {
-			_ = os.Remove(filepath.Join(c.opts.CacheDir, name))
-		}
-	}
-}
-
 // scan lists every log and returns its parsed contents in token-tracker's order,
 // parsing only what changed.
 func (c *Collector) scan() ([]*parsedFile, []string) {
@@ -353,19 +290,7 @@ func (c *Collector) scan() ([]*parsedFile, []string) {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				f := order[i]
-				if p := c.readCache(f); p != nil {
-					parsed[i] = p
-					continue
-				}
-				p := parseFile(f)
-				if p == nil {
-					continue
-				}
-				if after, err := os.Stat(f.path); err == nil && fileSignature(after) == f.signature {
-					c.writeCache(f, p)
-				}
-				parsed[i] = p
+				parsed[i] = parseFile(order[i])
 			}
 		}()
 	}
@@ -375,12 +300,8 @@ func (c *Collector) scan() ([]*parsedFile, []string) {
 	close(jobs)
 	wg.Wait()
 	next := make(map[string]cachedFile, len(order))
-	retained := map[string]bool{}
 	files := make([]*parsedFile, 0, len(order))
 	for i, f := range order {
-		if c.opts.CacheDir != "" {
-			retained[filepath.Base(c.cachePath(f.harness, f.path))] = true
-		}
 		if parsed[i] == nil {
 			continue
 		}
@@ -390,9 +311,6 @@ func (c *Collector) scan() ([]*parsedFile, []string) {
 	c.mu.Lock()
 	c.files = next
 	c.mu.Unlock()
-	if len(stale) > 0 {
-		c.pruneCache(retained)
-	}
 	return files, warnings
 }
 
@@ -410,35 +328,31 @@ func (c *Collector) Collect(ctx context.Context) Collection {
 	files = append(files, grokFiles...)
 	warnings = append(warnings, grokWarnings...)
 
-	candidates := map[string]bool{}
 	titles := map[string]string{}
 	for _, file := range files {
-		for _, entry := range file.Events {
-			candidates[entry.Event.ID] = true
-			if entry.LegacyEventID != "" {
-				candidates[entry.LegacyEventID] = true
-			}
-			if file.SessionTitle != "" {
+		if file.SessionTitle != "" {
+			for _, entry := range file.Events {
 				titles[entry.Event.SessionID] = file.SessionTitle
 			}
 		}
 	}
 	views := newViews(files)
-	entries := deduplicate(views)
-	retained := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		retained[entry.Event.ID] = true
-	}
+	entries, retained := deduplicate(views)
 	var retracted []string
 	seenRetracted := map[string]bool{}
 	retract := func(id string) {
-		if !retained[id] && !seenRetracted[id] {
+		if _, kept := retained[id]; !kept && !seenRetracted[id] {
 			seenRetracted[id] = true
 			retracted = append(retracted, id)
 		}
 	}
-	for id := range candidates {
-		retract(id)
+	for _, file := range files {
+		for _, entry := range file.Events {
+			retract(entry.Event.ID)
+			if entry.LegacyEventID != "" {
+				retract(entry.LegacyEventID)
+			}
+		}
 	}
 	for _, view := range views {
 		for _, id := range view.Retracted {
@@ -532,10 +446,10 @@ func (c *Collector) Collect(ctx context.Context) Collection {
 }
 
 func sortEvents(events []Event) {
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].Timestamp != events[j].Timestamp {
-			return events[i].Timestamp < events[j].Timestamp
+	slices.SortFunc(events, func(a, b Event) int {
+		if c := strings.Compare(a.Timestamp, b.Timestamp); c != 0 {
+			return c
 		}
-		return events[i].ID < events[j].ID
+		return strings.Compare(a.ID, b.ID)
 	})
 }

@@ -149,8 +149,12 @@ func checkRules(catalog PriceSnapshot, rules []PricingRule) string {
 }
 
 func (p *Pricing) setLocked(stored storedPricing) {
+	previous := p.policy
 	p.stored = stored
 	p.policy = &PricingPolicy{Catalog: stored.Catalog, Rules: stored.Rules, Revision: pricingRevision(stored)}
+	if previous != nil && previous.Revision != p.policy.Revision && p.onChange != nil {
+		go p.onChange()
+	}
 }
 
 // Policy is the current immutable pricing policy.
@@ -196,9 +200,6 @@ func (p *Pricing) persistLocked(stored storedPricing) error {
 		p.fingerprint = fileFingerprint(p.path())
 	}
 	p.setLocked(stored)
-	if p.onChange != nil {
-		go p.onChange()
-	}
 	return nil
 }
 

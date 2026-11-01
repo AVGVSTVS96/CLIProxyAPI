@@ -507,6 +507,23 @@ type PoolConfig struct {
 	AccountsFile string `yaml:"accounts-file,omitempty" json:"accounts-file,omitempty"`
 }
 
+// UsageConfig turns on usage collection: this machine's Claude Code, Codex, Pi, Grok and
+// Muse logs, plus records other machines push, kept under StateDir.
+type UsageConfig struct {
+	// StateDir holds the usage store, parse cache and pricing-state.json. Empty disables usage.
+	StateDir string `yaml:"state-dir,omitempty" json:"state-dir,omitempty"`
+	// DeviceID names this machine in the store. Empty reads or creates StateDir/device-id.
+	DeviceID string `yaml:"device-id,omitempty" json:"device-id,omitempty"`
+	// DeviceLabel is the name shown for this machine. Empty uses the hostname.
+	DeviceLabel string `yaml:"device-label,omitempty" json:"device-label,omitempty"`
+	// T3DataDir is T3 Code's data directory, for thread titles and links. Default ~/.t3/userdata.
+	T3DataDir string `yaml:"t3-data-dir,omitempty" json:"t3-data-dir,omitempty"`
+	// T3URL is the T3 Code web app thread links point to. Default https://app.t3.codes.
+	T3URL string `yaml:"t3-url,omitempty" json:"t3-url,omitempty"`
+	// PushKey is the server's management key, used by -usage-push.
+	PushKey string `yaml:"push-key,omitempty" json:"-"`
+}
+
 // OAuthModelAlias defines a model ID alias for a specific channel.
 // It maps the upstream model name (Name) to the client-visible alias (Alias).
 // When Fork is true, the alias is added as an additional model in listings while

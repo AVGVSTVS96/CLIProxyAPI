@@ -27,14 +27,25 @@ func (v *fileView) harness() string {
 
 type replayKey struct{ native, session string }
 
+// owners records the identities claiming one native Claude request: the first one, and
+// whether a different one was seen.
+type owners struct {
+	id       string
+	multiple bool
+	billed   bool
+}
+
 func filterClaudeReplays(files []*fileView) {
-	originals := map[replayKey]map[string]bool{}
-	billed := map[replayKey]bool{}
-	remember := func(key replayKey, id string) {
-		if originals[key] == nil {
-			originals[key] = map[string]bool{}
+	originals := map[replayKey]*owners{}
+	remember := func(key replayKey, id string) *owners {
+		o := originals[key]
+		if o == nil {
+			o = &owners{id: id}
+			originals[key] = o
+		} else if o.id != id {
+			o.multiple = true
 		}
-		originals[key][id] = true
+		return o
 	}
 	for _, file := range files {
 		for _, request := range file.EmptyClaudeRequests {
@@ -44,32 +55,27 @@ func filterClaudeReplays(files []*fileView) {
 			if entry.Event.Harness != "claude" || entry.Sidechain || entry.NativeMessageID == "" {
 				continue
 			}
-			key := replayKey{entry.NativeMessageID, entry.Event.SessionID}
 			owner := entry.ParentEventID
 			if owner == "" {
 				owner = entry.Event.ID
 			}
-			remember(key, owner)
+			o := remember(replayKey{entry.NativeMessageID, entry.Event.SessionID}, owner)
 			if tokenTotal(&entry.Event) > 0 {
-				billed[key] = true
+				o.billed = true
 			}
 		}
 	}
 	for _, file := range files {
-		retracted := map[string]bool{}
-		order := append([]string(nil), file.Retracted...)
-		for _, id := range order {
-			retracted[id] = true
-		}
+		var retracted map[string]bool
+		order := file.Retracted
 		kept := file.Events[:0:0]
 		for _, entry := range file.Events {
 			if entry.Event.Harness != "claude" || !entry.Sidechain || entry.NativeMessageID == "" {
 				kept = append(kept, entry)
 				continue
 			}
-			key := replayKey{entry.NativeMessageID, entry.Event.SessionID}
-			identities := originals[key]
-			if identities == nil || len(identities) != 1 || !billed[key] {
+			o := originals[replayKey{entry.NativeMessageID, entry.Event.SessionID}]
+			if o == nil || o.multiple || !o.billed {
 				kept = append(kept, entry)
 				continue
 			}
@@ -77,9 +83,17 @@ func filterClaudeReplays(files []*fileView) {
 			if owner == "" {
 				owner = entry.Event.ID
 			}
-			if !identities[owner] && !retracted[entry.Event.ID] {
-				retracted[entry.Event.ID] = true
-				order = append(order, entry.Event.ID)
+			if o.id != owner {
+				if retracted == nil {
+					retracted = make(map[string]bool, len(order))
+					for _, id := range order {
+						retracted[id] = true
+					}
+				}
+				if !retracted[entry.Event.ID] {
+					retracted[entry.Event.ID] = true
+					order = append(order[:len(order):len(order)], entry.Event.ID)
+				}
 			}
 		}
 		if len(kept) != len(file.Events) {
@@ -288,14 +302,18 @@ func applyMuseParentProjects(files []*fileView) {
 }
 
 // deduplicate keeps one candidate per id: a primary record over a sidechain copy, then
-// the larger token total. Order is each id's first appearance.
-func deduplicate(files []*fileView) []*candidate {
+// the larger token total. Order is each id's first appearance; index maps id to position.
+func deduplicate(files []*fileView) (entries []*candidate, index map[string]int) {
 	filterClaudeReplays(files)
 	filterCodexReplays(files)
 	filterPiReplays(files)
 	applyMuseParentProjects(files)
-	index := map[string]int{}
-	var entries []*candidate
+	total := 0
+	for _, file := range files {
+		total += len(file.Events)
+	}
+	index = make(map[string]int, total)
+	entries = make([]*candidate, 0, total)
 	for _, file := range files {
 		for _, incoming := range file.Events {
 			i, ok := index[incoming.Event.ID]
@@ -311,5 +329,5 @@ func deduplicate(files []*fileView) []*candidate {
 			}
 		}
 	}
-	return entries
+	return entries, index
 }

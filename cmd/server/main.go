@@ -133,6 +133,8 @@ func main() {
 	var standalone bool
 	var managementBaseURL string
 	var localModel bool
+	var usagePush string
+	var usageImport string
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
@@ -162,6 +164,8 @@ func main() {
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
 	flag.StringVar(&managementBaseURL, "management-base-url", "", "Base URL of remote management API for TUI client mode (e.g. https://proxy.example.com)")
+	flag.StringVar(&usagePush, "usage-push", "", "Push this machine's agent usage to the server at this URL (e.g. http://host:8317) using the config's usage section, and keep it current")
+	flag.StringVar(&usageImport, "usage-import", "", "Import token-tracker's stored history from its data directory (e.g. ~/.local/share/token-tracker) into the usage store, then exit")
 	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalogs unless models.catalog, models.codex-catalog, or models.devin-catalog explicitly overrides the source")
 
 	flag.CommandLine.Usage = func() {
@@ -213,6 +217,10 @@ func main() {
 			Exclude:     exclude,
 		})
 		os.Exit(code)
+	}
+
+	if usagePush != "" || usageImport != "" {
+		os.Exit(runUsageCommand(configPath, usagePush, usageImport))
 	}
 
 	// Core application variables.
