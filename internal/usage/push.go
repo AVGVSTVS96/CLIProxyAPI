@@ -77,11 +77,15 @@ func Push(ctx context.Context, cfg config.UsageConfig, serverURL string) error {
 			}
 			wait := backoff
 			var status statusError
-			if errors.As(err, &status) && (status.code == http.StatusUnauthorized || status.code == http.StatusForbidden) {
-				// Each rejected key counts toward the server's lockout of this machine's address.
-				wait = time.Hour
-				if status.code == http.StatusForbidden {
+			if errors.As(err, &status) {
+				switch status.code {
+				case http.StatusUnauthorized:
+					// Each rejected key counts toward the server's lockout of this machine's address.
+					wait = time.Hour
+				case http.StatusForbidden:
 					wait = 31 * time.Minute
+				case http.StatusNotFound, http.StatusServiceUnavailable:
+					wait = 10 * time.Minute
 				}
 			}
 			log.WithError(err).Warnf("usage: push failed; retrying in %s", wait)
