@@ -5,7 +5,9 @@ import (
 	"testing"
 )
 
-func lines(records ...string) *strings.Reader { return strings.NewReader(strings.Join(records, "\n") + "\n") }
+func lines(records ...string) *strings.Reader {
+	return strings.NewReader(strings.Join(records, "\n") + "\n")
+}
 
 func TestClaudeRepeatsAndSidechainReplays(t *testing.T) {
 	main, err := parseClaude(lines(

@@ -158,6 +158,20 @@ access:
 #     max-string-bytes: 256
 #     staging-retention: 1m
 
+# Agent usage: this machine's Claude Code, Codex, Pi, Grok and Muse logs, priced like token-tracker
+# (LiteLLM catalog refreshed daily, plus saved rules), followed as they change, together with
+# records other machines push to POST /v0/management/usage/events (management key).
+# usage:
+#   state-dir: ""         # store, device-id and pricing-state.json; empty turns usage off
+#   device-id: ""         # this machine's id in the store; empty creates state-dir/device-id
+#   device-label: ""      # name shown for this machine; empty uses the hostname
+#   t3-data-dir: ""       # T3 Code data for thread titles and links (default ~/.t3/userdata)
+#   t3-url: ""            # T3 Code web app for thread links (default https://app.t3.codes)
+#   push-key: ""          # another machine: the server's management key, for
+#                         # cliproxyapi -config <this file> -usage-push http://server:8317
+# Import token-tracker's history once, with the server stopped:
+#   cliproxyapi -config <config> -usage-import ~/.local/share/token-tracker
+
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first, quota
