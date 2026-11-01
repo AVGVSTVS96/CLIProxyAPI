@@ -6,8 +6,6 @@ package deck
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -373,8 +371,7 @@ func (d *Deck) revision() string {
 	if err != nil {
 		return ""
 	}
-	sum := sha256.Sum256(data)
-	return `"` + hex.EncodeToString(sum[:]) + `"`
+	return `"` + config.ComputeSourceHash(data) + `"`
 }
 
 func (d *Deck) refreshPool() {
