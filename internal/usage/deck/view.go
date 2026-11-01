@@ -154,9 +154,7 @@ type Facet struct {
 
 // Sources says where the view's data came from and when.
 type Sources struct {
-	TrackerAt    *int64         `json:"trackerAt"`
-	TrackerError *string        `json:"trackerError"`
-	Devices      []usage.Device `json:"devices"`
+	Devices []usage.Device `json:"devices"`
 }
 
 // UsageView is the Usage page: totals, the ranked rows, the top-seven series
@@ -635,7 +633,7 @@ var liveStrength = map[string]int{"blocked": 3, "working": 2, "idle": 1}
 
 // withLive lights each row from the live sessions; cheap, so it runs on every
 // request over a cached view.
-func withLive(view *UsageView, live []*LiveSession, trackerAt int64) UsageView {
+func withLive(view *UsageView, live []*LiveSession) UsageView {
 	out := *view
 	out.Rows = make([]Row, len(view.Rows))
 	for i, row := range view.Rows {
@@ -651,6 +649,5 @@ func withLive(view *UsageView, live []*LiveSession, trackerAt int64) UsageView {
 		row.Live = best
 		out.Rows[i] = row
 	}
-	out.Sources.TrackerAt = &trackerAt
 	return out
 }

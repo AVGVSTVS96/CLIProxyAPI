@@ -600,7 +600,7 @@ func (d *Deck) Usage(q Query) (UsageView, error) {
 		view = usageView(c.value, c.parts, d.labelsLocked(), q)
 		d.views[key] = view
 	}
-	return withLive(view, d.live.order, c.at.UnixMilli()), nil
+	return withLive(view, d.live.order), nil
 }
 
 // SessionUsage answers token-tracker's GetSessionUsage for one range.

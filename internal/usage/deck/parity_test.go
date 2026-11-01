@@ -160,7 +160,7 @@ func TestParity(t *testing.T) {
 	for _, query := range queries {
 		params, _ := url.ParseQuery(query)
 		q := ParseQuery(params)
-		answers = append(answers, answer{query, withLive(usageView(tracked[q.Range], parts[q.Range], labels, q), nil, 0)})
+		answers = append(answers, answer{query, withLive(usageView(tracked[q.Range], parts[q.Range], labels, q), nil)})
 	}
 	t.Logf("%d views %v", len(queries), time.Since(started))
 	writeOut(t, filepath.Join(out, "go-views.json"), answers)
@@ -257,7 +257,7 @@ func TestDeckLive(t *testing.T) {
 		for _, s := range tracked[q.Range].Sessions {
 			parts = append(parts, partsOf(s, names)...)
 		}
-		answers = append(answers, answer{query, withLive(usageView(tracked[q.Range], parts, labels, q), nil, 0)})
+		answers = append(answers, answer{query, withLive(usageView(tracked[q.Range], parts, labels, q), nil)})
 	}
 	writeOut(t, filepath.Join(live, "go-views.json"), answers)
 }
