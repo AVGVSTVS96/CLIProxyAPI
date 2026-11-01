@@ -933,3 +933,25 @@ func TestV8SecretHashResolvesReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestV8MigrationKeepsUsage(t *testing.T) {
+	raw := []byte(`config-version: 8
+server: {port: 8317}
+usage:
+  state-dir: /var/usage
+  timezone: America/Los_Angeles
+  plans:
+    - {name: ChatGPT Pro, providers: [openai], monthly-usd: 200, since: "2026-04-24"}
+`)
+	migrated, _, err := NormalizeConfigLayout(raw, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseConfigBytes(migrated)
+	if err != nil || cfg.Usage.StateDir != "/var/usage" || cfg.Usage.Timezone != "America/Los_Angeles" || len(cfg.Usage.Plans) != 1 {
+		t.Fatalf("migration dropped the usage section: cfg=%+v error=%v\n%s", cfg.Usage, err, migrated)
+	}
+	if strings.Contains(string(migrated), "# usage") {
+		t.Fatalf("usage was commented out:\n%s", migrated)
+	}
+}
