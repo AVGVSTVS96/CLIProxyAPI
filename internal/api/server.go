@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -307,7 +308,7 @@ func (s *Server) Start() error {
 	}
 
 	addr := s.server.Addr
-	listener, errListen := net.Listen("tcp", addr)
+	listener, errListen := listen(addr)
 	if errListen != nil {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
@@ -448,19 +449,22 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Close the HTTP server immediately without graceful draining.
-	var errCloseServer error
-	if s.server != nil {
-		errCloseServer = s.server.Close()
-		if errors.Is(errCloseServer, http.ErrServerClosed) || errors.Is(errCloseServer, net.ErrClosed) {
-			errCloseServer = nil
-		}
-	}
+	// Streams that never end on their own close first, so draining waits only for requests.
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
 	}
 	if s.deck != nil {
 		s.deck.Close()
+	}
+	// Let in-flight requests finish until ctx ends, then close what is left.
+	var errCloseServer error
+	if s.server != nil {
+		if errShutdown := s.server.Shutdown(ctx); errShutdown != nil {
+			errCloseServer = s.server.Close()
+		}
+		if errors.Is(errCloseServer, http.ErrServerClosed) || errors.Is(errCloseServer, net.ErrClosed) {
+			errCloseServer = nil
+		}
 	}
 	if errCloseServer != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", errCloseServer)
@@ -468,4 +472,18 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	log.Debug("API server stopped")
 	return nil
+}
+
+// listen takes the socket systemd passes in when started by a socket unit, so a restart
+// queues new connections in the kernel instead of refusing them; otherwise it opens addr.
+func listen(addr string) (net.Listener, error) {
+	if os.Getenv("LISTEN_PID") != strconv.Itoa(os.Getpid()) || os.Getenv("LISTEN_FDS") != "1" {
+		return net.Listen("tcp", addr)
+	}
+	_ = os.Unsetenv("LISTEN_PID")
+	_ = os.Unsetenv("LISTEN_FDS")
+	_ = os.Unsetenv("LISTEN_FDNAMES")
+	file := os.NewFile(3, "systemd-socket")
+	defer func() { _ = file.Close() }()
+	return net.FileListener(file)
 }

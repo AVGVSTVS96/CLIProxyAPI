@@ -68,7 +68,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownDrain)
 		defer shutdownCancel()
 		if errShutdown := s.Shutdown(shutdownCtx); errShutdown != nil {
 			log.Errorf("service shutdown returned error: %v", errShutdown)
@@ -99,6 +99,10 @@ func (s *Service) Run(ctx context.Context) error {
 			includeBaseline: true,
 			auths:           s.coreManager.List(),
 		})
+		// Publish the loaded auths' models before serving, so a restart never answers
+		// live requests with "unknown provider" while the watcher catches up.
+		s.registerModelsForAuthBatch(ctx, s.coreManager.List())
+		s.coreManager.RefreshSchedulerAll()
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
@@ -257,6 +261,10 @@ func (s *Service) Run(ctx context.Context) error {
 		return errServer
 	}
 }
+
+// shutdownDrain bounds how long a stop waits for in-flight requests, such as long model
+// streams, to finish; the service unit's TimeoutStopSec must exceed it.
+const shutdownDrain = 3 * time.Minute
 
 // Shutdown stops background workers and immediately closes the HTTP server.
 // It ensures all resources are properly cleaned up and connections are closed.
