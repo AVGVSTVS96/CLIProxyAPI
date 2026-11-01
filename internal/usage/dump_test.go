@@ -65,3 +65,23 @@ func TestDumpStore(t *testing.T) {
 	devices, _ := json.MarshalIndent(store.Devices(), "", "  ")
 	_ = os.WriteFile(out+"devices.json", devices, 0o644)
 }
+
+// TestDumpSynthetic collects synthetic Grok and Muse logs the way token-tracker was run on
+// them: USAGE_SYNTH=<root with grok/ and muse/> go test -run TestDumpSynthetic
+func TestDumpSynthetic(t *testing.T) {
+	root := os.Getenv("USAGE_SYNTH")
+	if root == "" {
+		t.Skip("USAGE_SYNTH not set")
+	}
+	none := root + "/none"
+	c := NewCollector(Sources{Home: root, Claude: []string{none}, Codex: []string{none}, Pi: []string{none},
+		Grok: []string{root + "/grok"}, Muse: []string{root + "/muse"}, T3Data: none, DeviceID: "synth"}, NewPricing(""))
+	collection := c.Collect(context.Background())
+	file, _ := os.Create(root + "/go.ndjson")
+	for _, e := range collection.Events {
+		data, _ := json.Marshal(e)
+		file.Write(append(data, '\n'))
+	}
+	file.Close()
+	t.Logf("go events %d warnings %v", len(collection.Events), collection.Warnings)
+}
