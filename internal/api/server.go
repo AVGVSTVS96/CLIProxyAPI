@@ -27,6 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage/deck"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
@@ -107,6 +108,10 @@ type Server struct {
 
 	exampleAPIKeySafeModeEnabled bool
 	exampleAPIKeySafeModeActive  atomic.Bool
+
+	// usageStore feeds the dashboard's Usage, Live and Accounts views, which deck serves.
+	usageStore deck.Store
+	deck       *deck.Deck
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -234,6 +239,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.mgmt.SetPostAuthPersistHook(optionState.postAuthPersistHook)
 	}
 	s.localPassword = optionState.localPassword
+	s.usageStore = optionState.usageStore
 
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
 	// subscribe-config heartbeat connection is healthy.
@@ -452,6 +458,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
+	}
+	if s.deck != nil {
+		s.deck.Close()
 	}
 	if errCloseServer != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", errCloseServer)

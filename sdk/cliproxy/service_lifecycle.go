@@ -108,6 +108,7 @@ func (s *Service) Run(ctx context.Context) error {
 		if local, errUsage := agentusage.Open(cfg.Usage); errUsage != nil {
 			log.Errorf("usage: %v", errUsage)
 		} else {
+			s.serverOptions = append(s.serverOptions, api.WithUsageStore(local))
 			go func() {
 				if errRun := local.Run(ctx); errRun != nil {
 					log.Errorf("usage collection stopped: %v", errRun)

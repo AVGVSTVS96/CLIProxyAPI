@@ -507,8 +507,9 @@ type PoolConfig struct {
 	AccountsFile string `yaml:"accounts-file,omitempty" json:"accounts-file,omitempty"`
 }
 
-// UsageConfig turns on usage collection: this machine's Claude Code, Codex, Pi, Grok and
-// Muse logs, plus records other machines push, kept under StateDir.
+// UsageConfig turns on usage: this machine's Claude Code, Codex, Pi, Grok and Muse logs plus
+// records other machines push, kept under StateDir, and the dashboard's Usage, Live and
+// Accounts views. Limit readings, the session log and Claude plans come from routing.pool.
 type UsageConfig struct {
 	// StateDir holds the usage store, parse cache and pricing-state.json. Empty disables usage.
 	StateDir string `yaml:"state-dir,omitempty" json:"state-dir,omitempty"`
@@ -522,6 +523,22 @@ type UsageConfig struct {
 	T3URL string `yaml:"t3-url,omitempty" json:"t3-url,omitempty"`
 	// PushKey is the server's management key, used by -usage-push.
 	PushKey string `yaml:"push-key,omitempty" json:"-"`
+	// Timezone is the IANA zone usage days are counted in. Default: the machine's.
+	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+	// Hex is hex's folder, for thread names and connected apps. Default ~/hex.
+	Hex string `yaml:"hex,omitempty" json:"hex,omitempty"`
+	// Claude is Claude Code's config folder, for running sessions. Default ~/.claude.
+	Claude string `yaml:"claude,omitempty" json:"claude,omitempty"`
+	// Plans are subscriptions the pool can't read from an account profile, like ChatGPT Pro for Codex.
+	Plans []UsagePlan `yaml:"plans,omitempty" json:"plans,omitempty"`
+}
+
+// UsagePlan is a subscription whose fees cover its providers' usage from since (YYYY-MM-DD).
+type UsagePlan struct {
+	Name       string   `yaml:"name" json:"name"`
+	Providers  []string `yaml:"providers" json:"providers"`
+	MonthlyUSD float64  `yaml:"monthly-usd" json:"monthly-usd"`
+	Since      string   `yaml:"since" json:"since"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
