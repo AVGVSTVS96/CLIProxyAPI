@@ -158,6 +158,18 @@ access:
 #     max-string-bytes: 256
 #     staging-retention: 1m
 
+# Usage, Live and Accounts views in the dashboard. Limit readings, the per-session account
+# log and Claude plans come from routing.pool's state-dir and accounts-file.
+# usage:
+#   timezone: "America/Los_Angeles"  # zone usage days are counted in; default the machine's
+#   hex: "~/hex"                     # hex's folder, for thread names and connected apps
+#   claude: "~/.claude"              # Claude Code's config folder, for running sessions
+#   plans:                           # subscriptions no account profile reports
+#     - name: "ChatGPT Pro"
+#       providers: ["openai"]
+#       monthly-usd: 200
+#       since: "2026-04-24"
+
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first, quota

@@ -121,6 +121,9 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
+	// Usage configures the dashboard's Usage, Live and Accounts views.
+	Usage UsageConfig `yaml:"usage,omitempty" json:"usage,omitempty"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 

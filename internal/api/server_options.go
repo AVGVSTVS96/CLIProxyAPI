@@ -9,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage/deck"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -27,6 +28,7 @@ type serverOptionConfig struct {
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	exampleAPIKeySafeMode bool
+	usageStore            deck.Store
 }
 
 // ServerOption customises HTTP server construction.
@@ -78,6 +80,14 @@ func WithRouterConfigurator(fn func(*gin.Engine, *handlers.BaseAPIHandler, *conf
 func WithLocalManagementPassword(password string) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.localPassword = password
+	}
+}
+
+// WithUsageStore serves the dashboard's Usage, Live and Accounts views from the
+// usage store under /v0/management/deck.
+func WithUsageStore(store deck.Store) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.usageStore = store
 	}
 }
 

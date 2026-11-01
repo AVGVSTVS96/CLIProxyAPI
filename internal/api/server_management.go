@@ -7,7 +7,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage/deck"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -73,6 +76,21 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/api-call", s.mgmt.APICall)
 		mgmt.GET("/pool", s.mgmt.GetPool)
 		mgmt.GET("/pool/history", s.mgmt.GetPoolHistory)
+		if s.usageStore != nil {
+			s.cfgMu.RLock()
+			cfg := *s.cfg
+			s.cfgMu.RUnlock()
+			s.deck = deck.New(deck.Options{
+				Store: s.usageStore,
+				Pool: func(preview *config.PoolConfig) coreauth.PoolSnapshot {
+					return s.handlers.AuthManager.PoolSnapshot(preview)
+				},
+				ConfigPath: s.configFilePath,
+				Engine:     s.engine,
+				Config:     cfg,
+			})
+			s.deck.Register(mgmt.Group("/deck"))
+		}
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)

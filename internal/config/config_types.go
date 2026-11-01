@@ -507,6 +507,28 @@ type PoolConfig struct {
 	AccountsFile string `yaml:"accounts-file,omitempty" json:"accounts-file,omitempty"`
 }
 
+// UsageConfig configures the dashboard's Usage, Live and Accounts views. The
+// pool's limit readings, session log and plans come from routing.pool's state-dir
+// and accounts-file.
+type UsageConfig struct {
+	// Timezone is the IANA zone usage days are counted in. Default: the machine's.
+	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+	// Hex is hex's folder, for thread names and connected apps. Default ~/hex.
+	Hex string `yaml:"hex,omitempty" json:"hex,omitempty"`
+	// Claude is Claude Code's config folder, for running sessions. Default ~/.claude.
+	Claude string `yaml:"claude,omitempty" json:"claude,omitempty"`
+	// Plans are subscriptions the pool can't read from an account profile, like ChatGPT Pro for Codex.
+	Plans []UsagePlan `yaml:"plans,omitempty" json:"plans,omitempty"`
+}
+
+// UsagePlan is a subscription whose fees cover its providers' usage from since (YYYY-MM-DD).
+type UsagePlan struct {
+	Name       string   `yaml:"name" json:"name"`
+	Providers  []string `yaml:"providers" json:"providers"`
+	MonthlyUSD float64  `yaml:"monthly-usd" json:"monthly-usd"`
+	Since      string   `yaml:"since" json:"since"`
+}
+
 // OAuthModelAlias defines a model ID alias for a specific channel.
 // It maps the upstream model name (Name) to the client-visible alias (Alias).
 // When Fork is true, the alias is added as an additional model in listings while
