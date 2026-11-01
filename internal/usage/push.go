@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"math"
 	"net/http"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,11 +45,11 @@ func Push(ctx context.Context, cfg config.UsageConfig, serverURL string) error {
 	defer unlock()
 	endpoint := strings.TrimRight(serverURL, "/") + IngestPath
 	device := Device{ID: m.id, Label: m.label}
-	sent := map[string]Event{}
+	sent := map[string]uint64{}
 	withdrawn := map[string]bool{}
 	pending := func(collection Collection) (changed []Event, deleted []string) {
 		for _, e := range collection.Events {
-			if previous, ok := sent[e.ID]; !ok || !eventsEqual(&previous, &e) {
+			if digest, ok := sent[e.ID]; !ok || digest != eventDigest(&e) {
 				changed = append(changed, e)
 			}
 		}
@@ -62,8 +65,8 @@ func Push(ctx context.Context, cfg config.UsageConfig, serverURL string) error {
 		for backoff := time.Second; ; backoff = min(2*backoff, time.Minute) {
 			changed, deleted := pending(collection)
 			err := sendBatches(ctx, endpoint, key, device, changed, deleted, func(events []Event, ids []string) {
-				for _, e := range events {
-					sent[e.ID] = e
+				for i := range events {
+					sent[events[i].ID] = eventDigest(&events[i])
 				}
 				for _, id := range ids {
 					withdrawn[id] = true
@@ -82,8 +85,50 @@ func Push(ctx context.Context, cfg config.UsageConfig, serverURL string) error {
 		}
 	}
 	pass()
+	debug.FreeOSMemory()
 	log.Infof("usage: pushing %s (%s) to %s", m.label, m.id, serverURL)
 	return follow(ctx, m.collector.Roots(), pass)
+}
+
+var digestSeed = maphash.MakeSeed()
+
+// eventDigest fingerprints every field of a record, to tell which ones changed since sent.
+func eventDigest(e *Event) uint64 {
+	var h maphash.Hash
+	h.SetSeed(digestSeed)
+	str := func(s string) { _, _ = h.WriteString(s); _ = h.WriteByte(0) }
+	num := func(n int64) { _, _ = h.WriteString(strconv.FormatInt(n, 36)); _ = h.WriteByte(0) }
+	for _, s := range []string{e.ID, e.Timestamp, e.Harness, e.Model, e.RawModel, e.Project, e.SessionID, e.DeviceID,
+		e.SessionTitle, e.ProjectName, e.T3ThreadID, e.T3ThreadURL} {
+		str(s)
+	}
+	for _, p := range []*string{e.Repository, e.ServiceTier} {
+		if p == nil {
+			str("\x01nil")
+		} else {
+			str(*p)
+		}
+	}
+	for _, n := range []int64{e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens, e.ReasoningTokens,
+		int64(math.Float64bits(e.CostUSD))} {
+		num(n)
+	}
+	for _, p := range []*int64{e.CacheWrite1hTokens, e.Requests} {
+		if p == nil {
+			str("\x01nil")
+		} else {
+			num(*p)
+		}
+	}
+	if e.ReportedCostUSD == nil {
+		str("\x01nil")
+	} else {
+		num(int64(math.Float64bits(*e.ReportedCostUSD)))
+	}
+	if e.CostKnown {
+		str("known")
+	}
+	return h.Sum64()
 }
 
 // sendBatches posts records and withdrawals in bounded batches, reporting each
