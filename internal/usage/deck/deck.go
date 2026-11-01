@@ -6,6 +6,7 @@ package deck
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -117,7 +118,6 @@ type rangeCache struct {
 	value  *SessionUsage
 	parts  []part
 	names  *Names
-	key    string
 	news   string
 	at     time.Time
 	viewed time.Time
@@ -143,7 +143,6 @@ type Deck struct {
 	past      map[string][2]string
 	procs     processes
 	pool      *poolState
-	poolErr   error
 	live      *liveState
 	firstSeen map[string]float64
 	events    []prepared
@@ -165,8 +164,8 @@ func New(opts Options) *Deck {
 		d.ranges[r] = &rangeCache{}
 	}
 	d.ranges[Week].viewed = time.Now()
-	d.readings = &appendLog[LimitReading]{path: filepath.Join(d.paths.stateDir, "usage-history.ndjson"), parse: parseReading}
-	d.bindings = &appendLog[Binding]{path: filepath.Join(d.paths.stateDir, "attribution.ndjson"), parse: parseBinding}
+	d.readings = &appendLog[LimitReading]{path: d.stateFile("usage-history.ndjson"), parse: parseReading}
+	d.bindings = &appendLog[Binding]{path: d.stateFile("attribution.ndjson"), parse: parseBinding}
 
 	d.refreshProcesses()
 	d.refreshNames()
@@ -174,13 +173,16 @@ func New(opts Options) *Deck {
 	d.publish()
 	go d.warm(Week)
 
-	cancelStore := opts.Store.Subscribe(burst(ctx, 2*time.Second, d.usageChanged))
+	usageChanged := burst(ctx, 2*time.Second, d.usageChanged)
+	cancelStore := opts.Store.Subscribe(usageChanged)
 	go func() { <-ctx.Done(); cancelStore() }()
-	go d.follow([]string{filepath.Join(d.paths.hex, ".hex", "bin", "hex"), "watch"}, burst(ctx, 250*time.Millisecond, func() {
-		d.refreshNames()
-		d.publish()
-		d.resetViews()
-	}))
+	if exists(d.hexCommand()) {
+		go d.follow([]string{d.hexCommand(), "watch"}, burst(ctx, 250*time.Millisecond, func() {
+			d.refreshNames()
+			d.publish()
+			d.resetViews()
+		}))
+	}
 	go d.watch(burst(ctx, 250*time.Millisecond, func() { d.refreshProcesses(); d.publish() }),
 		watchSpec{dir: filepath.Join(d.paths.claude, "sessions"), match: func(rel string) bool { return pidFile.MatchString(rel) }},
 		watchSpec{dir: filepath.Join(d.paths.claude, "jobs"), depth: 1, match: func(rel string) bool { return strings.HasSuffix(rel, "/state.json") }},
@@ -188,18 +190,33 @@ func New(opts Options) *Deck {
 			return strings.HasSuffix(rel, "/hub.sock") || strings.HasSuffix(rel, "/sessions")
 		}})
 	d.poolChanged = burst(ctx, time.Second, func() { d.refreshPool(); d.publish() })
-	poolChanged := d.poolChanged
 	logsChanged := burst(ctx, 30*time.Second, func() { d.stream.stale("accounts") })
-	go d.watch(poolChanged, watchSpec{dir: d.paths.stateDir, depth: 1, match: func(rel string) bool {
-		if rel == "usage-history.ndjson" || rel == "attribution.ndjson" {
-			logsChanged()
-			return true
+	if d.paths.stateDir != "" {
+		go d.watch(d.poolChanged, watchSpec{dir: d.paths.stateDir, depth: 1, match: func(rel string) bool {
+			if rel == "usage-history.ndjson" || rel == "attribution.ndjson" {
+				logsChanged()
+				usageChanged()
+				return true
+			}
+			return strings.HasPrefix(rel, "resets/") || strings.HasPrefix(rel, "plans/")
+		}})
+	}
+	go d.every(time.Minute, d.poolChanged)
+	go d.every(freshFor, func() {
+		if d.stream.size() > 0 {
+			usageChanged()
 		}
-		return strings.HasPrefix(rel, "resets/") || strings.HasPrefix(rel, "plans/")
-	}})
-	go d.every(time.Minute, poolChanged)
+	})
 	go d.every(heartbeat, d.stream.heartbeat)
 	return d
+}
+
+// stateFile is a file in the pool's state folder; none without one.
+func (d *Deck) stateFile(name string) string {
+	if d.paths.stateDir == "" {
+		return ""
+	}
+	return filepath.Join(d.paths.stateDir, name)
 }
 
 // Close stops following changes and ends every stream.
@@ -340,7 +357,16 @@ func (d *Deck) refreshProcesses() {
 	d.mu.Unlock()
 }
 
+func (d *Deck) hexCommand() string { return filepath.Join(d.paths.hex, ".hex", "bin", "hex") }
+
+// refreshNames reads hex's thread names; without hex, sessions go unnamed.
 func (d *Deck) refreshNames() {
+	if !exists(d.hexCommand()) {
+		d.mu.Lock()
+		d.names = &Names{}
+		d.mu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithTimeout(d.ctx, time.Minute)
 	defer cancel()
 	d.mu.Lock()
@@ -456,16 +482,14 @@ func (d *Deck) planPricing(events []prepared, revision uint64, now time.Time) *p
 }
 
 // load computes one range's session usage.
-func (d *Deck) load(r Range) (*SessionUsage, string) {
+func (d *Deck) load(r Range) *SessionUsage {
 	events, revision := d.prepared()
 	readings, _ := d.readings.read()
 	bindings, _ := d.bindings.read()
 	now := time.Now()
 	plans := d.planPricing(events, revision, now)
 	limits := &limitInputs{readings: sortedReadings(readings), history: bindingHistory(bindings)}
-	devices := d.opts.Store.Devices()
-	key := fmt.Sprintf("%d %d %d %s", revision, len(readings), len(bindings), d.plansKey)
-	return sessionUsage(events, r, d.paths.zone, now, plans, limits, devices), key
+	return sessionUsage(events, r, d.paths.zone, now, plans, limits, d.opts.Store.Devices())
 }
 
 // warm reloads a range, one load at a time; listeners hear only when its
@@ -481,11 +505,13 @@ func (d *Deck) warm(r Range) {
 	c.loading = done
 	d.mu.Unlock()
 	defer close(done)
-	value, key := d.load(r)
-	news := string(encode([]any{value.Sessions, value.Windows}))
+	value := d.load(r)
+	hash := sha256.New()
+	_ = json.NewEncoder(hash).Encode([]any{value.Sessions, value.Windows})
+	news := string(hash.Sum(nil))
 	d.mu.Lock()
 	changed := c.news != news
-	c.value, c.key, c.news, c.at, c.loading = value, key, news, time.Now(), nil
+	c.value, c.news, c.at, c.loading = value, news, time.Now(), nil
 	if changed {
 		c.parts, c.names = nil, nil
 		for k := range d.views {
@@ -506,21 +532,24 @@ func (d *Deck) warm(r Range) {
 // sessions returns a range's session usage: a request never waits on a loaded
 // range, and one older than freshFor reloads behind it.
 func (d *Deck) sessions(r Range) *rangeCache {
-	d.mu.Lock()
-	c := d.ranges[r]
-	c.viewed = time.Now()
-	loaded, loading := c.value != nil, c.loading
-	stale := loaded && time.Since(c.at) > freshFor
-	d.mu.Unlock()
-	switch {
-	case !loaded && loading != nil:
-		<-loading
-	case !loaded:
-		d.warm(r)
-	case stale:
-		go d.warm(r)
+	for {
+		d.mu.Lock()
+		c := d.ranges[r]
+		c.viewed = time.Now()
+		loaded, loading, at := c.value != nil, c.loading, c.at
+		d.mu.Unlock()
+		switch {
+		case loaded:
+			if time.Since(at) > freshFor {
+				go d.warm(r)
+			}
+			return c
+		case loading != nil:
+			<-loading
+		default:
+			d.warm(r)
+		}
 	}
-	return c
 }
 
 func (d *Deck) labelsLocked() Labels {

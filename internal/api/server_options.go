@@ -84,7 +84,7 @@ func WithLocalManagementPassword(password string) ServerOption {
 }
 
 // WithUsageStore serves the dashboard's Usage, Live and Accounts views from the
-// usage store under /v0/management/deck.
+// usage store under /v8/management/deck and /v0/management/deck.
 func WithUsageStore(store deck.Store) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.usageStore = store
