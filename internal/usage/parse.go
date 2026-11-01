@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/tidwall/gjson"
@@ -47,13 +48,20 @@ type parsedFile struct {
 
 const maximumLineLength = 32 * 1024 * 1024
 
+var readers = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, 1<<20) }}
+
 // readLines calls visit for each line, as token-tracker's record parser splits a log:
 // every newline ends a complete line, and a final unterminated line is incomplete.
 // Lines over 32 MiB count as malformed without being parsed.
 func readLines(r io.Reader, visit func(line []byte, number int, complete bool), oversized func()) error {
-	reader := bufio.NewReaderSize(r, 1<<20)
+	reader := readers.Get().(*bufio.Reader)
+	reader.Reset(r)
+	defer func() {
+		reader.Reset(nil)
+		readers.Put(reader)
+	}()
 	var long []byte
-	tooLong := false
+	accumulating, tooLong := false, false
 	number := 0
 	for {
 		chunk, err := reader.ReadSlice('\n')
@@ -61,8 +69,9 @@ func readLines(r io.Reader, visit func(line []byte, number int, complete bool), 
 		if errors.Is(err, bufio.ErrBufferFull) {
 			if !tooLong {
 				long = append(long, chunk...)
+				accumulating = true
 				if len(long) > maximumLineLength*3 || (len(long) > maximumLineLength && jsLength(string(long)) > maximumLineLength) {
-					long, tooLong = nil, true
+					long, tooLong = long[:0], true
 				}
 			}
 			continue
@@ -74,7 +83,7 @@ func readLines(r io.Reader, visit func(line []byte, number int, complete bool), 
 			chunk = chunk[:len(chunk)-1]
 		}
 		line := chunk
-		if long != nil || tooLong {
+		if accumulating || tooLong {
 			long = append(long, chunk...)
 			line = long
 		}
@@ -87,7 +96,7 @@ func readLines(r io.Reader, visit func(line []byte, number int, complete bool), 
 				visit(line, number, complete)
 			}
 		}
-		long, tooLong = nil, false
+		long, accumulating, tooLong = long[:0], false, false
 		if !complete {
 			return nil
 		}
@@ -116,20 +125,108 @@ func parseRecords(r io.Reader, parsed *parsedFile, visit func(record gjson.Resul
 }
 
 // fields returns an object's members by name; a repeated key keeps its last value.
-func fields(r gjson.Result, names ...string) []gjson.Result {
-	out := make([]gjson.Result, len(names))
+func fields(r gjson.Result, names ...string) (out [12]gjson.Result) {
 	if !r.IsObject() {
 		return out
 	}
-	r.ForEach(func(key, value gjson.Result) bool {
+	for m := (members{raw: r.Raw}); ; {
+		key, value, ok := m.next()
+		if !ok {
+			return out
+		}
 		for i, name := range names {
-			if key.Str == name {
-				out[i] = value
+			if key == name {
+				out[i] = gjson.Parse(value)
 			}
 		}
-		return true
-	})
-	return out
+	}
+}
+
+// members walks a valid JSON object's members without allocating.
+type members struct {
+	raw     string
+	i       int
+	started bool
+}
+
+func (m *members) skipSpace() {
+	for m.i < len(m.raw) && (m.raw[m.i] <= ' ' || m.raw[m.i] == ',' || m.raw[m.i] == ':') {
+		m.i++
+	}
+}
+
+// next returns the next member's key and raw value.
+func (m *members) next() (string, string, bool) {
+	if !m.started {
+		m.started = true
+		m.i = strings.IndexByte(m.raw, '{') + 1
+		if m.i == 0 {
+			return "", "", false
+		}
+	}
+	m.skipSpace()
+	if m.i >= len(m.raw) || m.raw[m.i] != '"' {
+		return "", "", false
+	}
+	end, escaped := stringEnd(m.raw, m.i)
+	key := m.raw[m.i+1 : end-1]
+	if escaped {
+		key = gjson.Parse(m.raw[m.i:end]).Str
+	}
+	m.i = end
+	m.skipSpace()
+	start := m.i
+	m.i = valueEnd(m.raw, m.i)
+	return key, m.raw[start:m.i], true
+}
+
+// stringEnd returns the index just past the string starting at s[i] == '"'.
+func stringEnd(s string, i int) (int, bool) {
+	escaped := false
+	for j := i + 1; j < len(s); j++ {
+		switch s[j] {
+		case '\\':
+			escaped = true
+			j++
+		case '"':
+			return j + 1, escaped
+		}
+	}
+	return len(s), escaped
+}
+
+// valueEnd returns the index just past the JSON value starting at s[i].
+func valueEnd(s string, i int) int {
+	depth := 0
+	for j := i; j < len(s); j++ {
+		switch c := s[j]; c {
+		case '"':
+			j, _ = stringEnd(s, j)
+			j--
+			if depth == 0 {
+				return j + 1
+			}
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth == 0 {
+				return j
+			}
+			depth--
+			if depth == 0 {
+				return j + 1
+			}
+		case ',':
+			if depth == 0 {
+				return j
+			}
+		default:
+			if depth == 0 && c <= ' ' {
+				return j
+			}
+		}
+	}
+	return len(s)
 }
 
 func isString(v gjson.Result, s string) bool { return v.Type == gjson.String && v.Str == s }
