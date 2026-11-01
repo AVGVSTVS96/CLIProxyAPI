@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -472,18 +471,4 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	log.Debug("API server stopped")
 	return nil
-}
-
-// listen takes the socket systemd passes in when started by a socket unit, so a restart
-// queues new connections in the kernel instead of refusing them; otherwise it opens addr.
-func listen(addr string) (net.Listener, error) {
-	if os.Getenv("LISTEN_PID") != strconv.Itoa(os.Getpid()) || os.Getenv("LISTEN_FDS") != "1" {
-		return net.Listen("tcp", addr)
-	}
-	_ = os.Unsetenv("LISTEN_PID")
-	_ = os.Unsetenv("LISTEN_FDS")
-	_ = os.Unsetenv("LISTEN_FDNAMES")
-	file := os.NewFile(3, "systemd-socket")
-	defer func() { _ = file.Close() }()
-	return net.FileListener(file)
 }
