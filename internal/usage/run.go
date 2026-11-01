@@ -80,27 +80,44 @@ func openMachine(cfg config.UsageConfig) (*machine, error) {
 	return &machine{stateDir: stateDir, id: id, label: label, pricing: pricing, collector: collector}, nil
 }
 
-// Run collects this machine's usage into the store, then follows its logs, until ctx ends.
-func Run(ctx context.Context, cfg config.UsageConfig) error {
+// Local is the server's usage: the store of every device's records, and the collector
+// that keeps this machine's own records in it current.
+type Local struct {
+	*FileStore
+	machine *machine
+	unlock  func()
+}
+
+// Open opens the store under cfg.StateDir with everything already saved in it. Run then
+// keeps this machine's records current; the state directory stays locked until it returns.
+func Open(cfg config.UsageConfig) (*Local, error) {
 	m, err := openMachine(cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	unlock, err := lockState(m.stateDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer unlock()
 	store, err := OpenStore(m.stateDir, m.id, m.label, m.pricing)
 	if err != nil {
-		return err
+		unlock()
+		return nil, err
 	}
 	shared.Store(store)
+	return &Local{FileStore: store, machine: m, unlock: unlock}, nil
+}
+
+// Run collects this machine's logs into the store, then follows them and refreshes the
+// pricing catalog daily, until ctx ends.
+func (l *Local) Run(ctx context.Context) error {
+	defer l.unlock()
+	m := l.machine
 	go m.pricing.RunRefresh(ctx)
 	pass := func() {
 		started := time.Now()
 		collection := m.collector.Collect(ctx)
-		result, err := store.Apply(Batch{Device: Device{ID: m.id, Label: m.label}, Events: collection.Events,
+		result, err := l.Apply(Batch{Device: Device{ID: m.id, Label: m.label}, Events: collection.Events,
 			DeletedIDs: collection.RetractedIDs}, false)
 		if err != nil {
 			log.WithError(err).Warn("usage: could not save this machine's records")

@@ -105,11 +105,15 @@ func (s *Service) Run(ctx context.Context) error {
 		coreauth.StartPoolSampler(ctx, s.coreManager)
 	}
 	if cfg != nil && cfg.Usage.StateDir != "" {
-		go func() {
-			if errUsage := agentusage.Run(ctx, cfg.Usage); errUsage != nil {
-				log.Errorf("usage collection stopped: %v", errUsage)
-			}
-		}()
+		if local, errUsage := agentusage.Open(cfg.Usage); errUsage != nil {
+			log.Errorf("usage: %v", errUsage)
+		} else {
+			go func() {
+				if errRun := local.Run(ctx); errRun != nil {
+					log.Errorf("usage collection stopped: %v", errRun)
+				}
+			}()
+		}
 	}
 
 	if !homeEnabled {
