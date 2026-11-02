@@ -531,6 +531,9 @@ type UsageConfig struct {
 	Claude string `yaml:"claude,omitempty" json:"claude,omitempty"`
 	// Plans are subscriptions the pool can't read from an account profile, like ChatGPT Pro for Codex.
 	Plans []UsagePlan `yaml:"plans,omitempty" json:"plans,omitempty"`
+	// GitHubActions reads the claude-usage artifacts GitHub Actions runs upload, from every
+	// repository the gh login owns.
+	GitHubActions bool `yaml:"github-actions,omitempty" json:"github-actions,omitempty"`
 }
 
 // UsagePlan is a subscription whose fees cover its providers' usage from since (YYYY-MM-DD).

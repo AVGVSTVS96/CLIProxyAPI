@@ -55,6 +55,7 @@ func identity(cfg config.UsageConfig, stateDir string) (string, string, error) {
 
 type machine struct {
 	stateDir  string
+	github    bool
 	id, label string
 	pricing   *Pricing
 	collector *Collector
@@ -77,7 +78,7 @@ func openMachine(cfg config.UsageConfig) (*machine, error) {
 		DeviceID: id,
 		T3Data:   expandHome(cfg.T3DataDir), T3URL: cfg.T3URL,
 	}, pricing)
-	return &machine{stateDir: stateDir, id: id, label: label, pricing: pricing, collector: collector}, nil
+	return &machine{stateDir: stateDir, github: cfg.GitHubActions, id: id, label: label, pricing: pricing, collector: collector}, nil
 }
 
 // Local is the server's usage: the store of every device's records, and the collector
@@ -109,11 +110,15 @@ func Open(cfg config.UsageConfig) (*Local, error) {
 }
 
 // Run collects this machine's logs into the store, then follows them and refreshes the
-// pricing catalog daily, until ctx ends.
+// pricing catalog daily, until ctx ends. With usage.github-actions it also reads GitHub
+// Actions records.
 func (l *Local) Run(ctx context.Context) error {
 	defer l.unlock()
 	m := l.machine
 	go m.pricing.RunRefresh(ctx)
+	if m.github {
+		go newGitHubReader(m.stateDir, l.FileStore).run(ctx)
+	}
 	pass := func() {
 		started := time.Now()
 		collection := m.collector.Collect(ctx)
