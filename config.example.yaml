@@ -182,6 +182,16 @@ access:
 # Import token-tracker's history once, with the server stopped:
 #   cliproxyapi -config <config> -usage-import ~/.local/share/token-tracker
 
+# Files, Plugins and Executor pages of the dashboard, served under /v8/management/deck.
+# Hex and Claude folders come from usage.hex and usage.claude. Edits happen in worktrees on
+# edit/ branches; the live checkout stays read-only. Review repos ship through pull requests.
+# workspace:
+#   repos:
+#     - {id: hex, name: hex, path: "~/hex", about: "Your files", review: false}
+#   worktrees: "~/.local/share/cliproxyapi/worktrees"   # default when empty
+#   drafts: {dir: "~/drafts", targets: {"AGENTS.md": "hex:AGENTS.md"}}
+#   executor: {apps: "~/executor-apps", token: "~/.config/executor/token", api: "https://app.executor.sh"}
+
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first, quota

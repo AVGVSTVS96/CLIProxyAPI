@@ -31,8 +31,12 @@ func (s *Server) registerManagementV8Routes() {
 	v8.POST("/requests/api-call", s.mgmt.APICall)
 	v8.GET("/pool", s.mgmt.GetPool)
 	v8.GET("/pool/history", s.mgmt.GetPoolHistory)
+	deckGroup := v8.Group("/deck")
 	if s.deck != nil {
-		s.deck.Register(v8.Group("/deck"))
+		s.deck.Register(deckGroup)
+	}
+	if s.workspace != nil {
+		s.workspace.Register(deckGroup)
 	}
 	v8.POST("/routing/cooldown/reset", s.mgmt.ResetQuota)
 	v8.GET("/routing/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)

@@ -28,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage/deck"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/workspace"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
@@ -112,6 +113,8 @@ type Server struct {
 	// usageStore feeds the dashboard's Usage, Live and Accounts views, which deck serves.
 	usageStore deck.Store
 	deck       *deck.Deck
+	// workspace serves the dashboard's Files, Plugins and Executor pages beside deck's views.
+	workspace *workspace.Service
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -454,6 +457,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 	if s.deck != nil {
 		s.deck.Close()
+	}
+	if s.workspace != nil {
+		s.workspace.Close()
 	}
 	// Let in-flight requests finish until ctx ends, then close what is left.
 	var errCloseServer error

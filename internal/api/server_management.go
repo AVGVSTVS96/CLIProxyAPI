@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage/deck"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/workspace"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -25,10 +26,10 @@ func (s *Server) registerManagementRoutes() {
 
 	log.Info("management routes registered after secret key configuration")
 
+	s.cfgMu.RLock()
+	cfg := *s.cfg
+	s.cfgMu.RUnlock()
 	if s.usageStore != nil {
-		s.cfgMu.RLock()
-		cfg := *s.cfg
-		s.cfgMu.RUnlock()
 		s.deck = deck.New(deck.Options{
 			Store: s.usageStore,
 			Pool: func(preview *config.PoolConfig) coreauth.PoolSnapshot {
@@ -38,6 +39,13 @@ func (s *Server) registerManagementRoutes() {
 			Engine:     s.engine,
 			Config:     cfg,
 		})
+	}
+	if cfg.Workspace.Enabled() {
+		stale := func(...string) {}
+		if s.deck != nil {
+			stale = s.deck.Stale
+		}
+		s.workspace = workspace.New(workspace.Options{Config: cfg, Stale: stale})
 	}
 	s.registerManagementV8Routes()
 	s.engine.POST("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)

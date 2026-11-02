@@ -214,6 +214,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if s.deck != nil {
 		s.deck.SetConfig(*cfg)
 	}
+	if s.workspace != nil {
+		s.workspace.SetConfig(*cfg)
+	}
 	s.refreshPluginManagementRoutes()
 
 	// Count client sources from configuration and auth store.

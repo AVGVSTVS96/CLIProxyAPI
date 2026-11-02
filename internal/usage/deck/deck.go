@@ -222,6 +222,9 @@ func (d *Deck) stateFile(name string) string {
 // Close stops following changes and ends every stream.
 func (d *Deck) Close() { d.cancel() }
 
+// Stale tells every open stream to refetch the resources tags name, like "plugins" or "repo:hex".
+func (d *Deck) Stale(tags ...string) { d.stream.stale(tags...) }
+
 // SetConfig applies a reloaded config's usage settings.
 func (d *Deck) SetConfig(cfg config.Config) {
 	d.mu.Lock()
