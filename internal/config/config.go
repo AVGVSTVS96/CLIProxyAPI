@@ -124,6 +124,9 @@ type Config struct {
 	// Usage collects coding-agent usage from logs and serves the dashboard's Usage, Live and Accounts views.
 	Usage UsageConfig `yaml:"usage,omitempty" json:"usage,omitempty"`
 
+	// Workspace serves the dashboard's Files, Plugins and Executor pages.
+	Workspace WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 

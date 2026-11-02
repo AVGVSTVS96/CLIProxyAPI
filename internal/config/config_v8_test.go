@@ -955,3 +955,31 @@ usage:
 		t.Fatalf("usage was commented out:\n%s", migrated)
 	}
 }
+
+func TestV8MigrationKeepsWorkspace(t *testing.T) {
+	raw := []byte(`config-version: 8
+server: {port: 8317}
+workspace:
+  repos:
+    - {id: hex, name: hex, path: "~/hex", about: "Your files", review: false}
+    - {id: core, path: "~/hex/.hex", review: true}
+  worktrees: /var/worktrees
+  drafts: {dir: /var/drafts, targets: {"AGENTS.md": "hex:AGENTS.md"}}
+  executor: {apps: /var/apps, token: /var/token, api: "https://app.executor.sh"}
+`)
+	migrated, _, err := NormalizeConfigLayout(raw, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseConfigBytes(migrated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := cfg.Workspace
+	if len(w.Repos) != 2 || !w.Repos[1].Review || w.Worktrees != "/var/worktrees" || w.Drafts.Targets["AGENTS.md"] != "hex:AGENTS.md" || w.Executor.API != "https://app.executor.sh" || !w.Enabled() {
+		t.Fatalf("migration dropped the workspace section: cfg=%+v\n%s", w, migrated)
+	}
+	if strings.Contains(string(migrated), "# workspace") {
+		t.Fatalf("workspace was commented out:\n%s", migrated)
+	}
+}

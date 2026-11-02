@@ -541,6 +541,50 @@ type UsagePlan struct {
 	Since      string   `yaml:"since" json:"since"`
 }
 
+// WorkspaceConfig turns on the dashboard's Files, Plugins and Executor pages: browse and
+// edit git repos through worktrees, apply drafts, switch Claude Code plugins and manage
+// Executor apps. Hex and Claude folders come from usage.hex and usage.claude.
+type WorkspaceConfig struct {
+	// Repos are the git checkouts the Files page shows. One without a .git is skipped.
+	Repos []WorkspaceRepo `yaml:"repos,omitempty" json:"repos,omitempty"`
+	// Worktrees holds the worktrees edits happen in. Default ~/.local/share/cliproxyapi/worktrees.
+	Worktrees string `yaml:"worktrees,omitempty" json:"worktrees,omitempty"`
+	// Drafts is a folder of proposed files and the repo:path each one replaces.
+	Drafts WorkspaceDrafts `yaml:"drafts,omitempty" json:"drafts,omitempty"`
+	// Executor manages Executor apps from local sources.
+	Executor WorkspaceExecutor `yaml:"executor,omitempty" json:"executor,omitempty"`
+}
+
+// Enabled reports whether any workspace page is configured.
+func (w WorkspaceConfig) Enabled() bool {
+	return len(w.Repos) > 0 || w.Drafts.Dir != "" || w.Executor.API != ""
+}
+
+// WorkspaceRepo is a git checkout. Review repos ship through pull requests.
+type WorkspaceRepo struct {
+	ID     string `yaml:"id" json:"id"`
+	Name   string `yaml:"name,omitempty" json:"name,omitempty"`
+	Path   string `yaml:"path" json:"path"`
+	About  string `yaml:"about,omitempty" json:"about,omitempty"`
+	Review bool   `yaml:"review,omitempty" json:"review,omitempty"`
+}
+
+// WorkspaceDrafts maps each file in Dir to the "repo:path" it proposes to replace.
+type WorkspaceDrafts struct {
+	Dir     string            `yaml:"dir,omitempty" json:"dir,omitempty"`
+	Targets map[string]string `yaml:"targets,omitempty" json:"targets,omitempty"`
+}
+
+// WorkspaceExecutor points at the Executor API and the folder of local app sources.
+type WorkspaceExecutor struct {
+	// Apps holds one folder per app slug.
+	Apps string `yaml:"apps,omitempty" json:"apps,omitempty"`
+	// Token is a file holding the API token.
+	Token string `yaml:"token,omitempty" json:"token,omitempty"`
+	// API is the Executor base URL, like https://app.executor.sh.
+	API string `yaml:"api,omitempty" json:"api,omitempty"`
+}
+
 // OAuthModelAlias defines a model ID alias for a specific channel.
 // It maps the upstream model name (Name) to the client-visible alias (Alias).
 // When Fork is true, the alias is added as an additional model in listings while
