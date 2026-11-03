@@ -372,11 +372,16 @@ func (c *Collector) Collect(ctx context.Context) Collection {
 		return r
 	}
 	isRemote := func(r *string) bool { return r != nil && !strings.HasPrefix(*r, "local:") }
-	t3 := readT3Metadata(ctx, c.opts.T3Data, c.opts.T3URL)
-	sessionRepositories := map[string]*string{}
-	attempted := map[string]bool{}
+	type sessionKey struct{ harness, session string }
+	t3 := map[sessionKey]t3Metadata{}
+	for key, metadata := range readT3Metadata(ctx, c.opts.T3Data, c.opts.T3URL) {
+		harness, session, _ := strings.Cut(key, ":")
+		t3[sessionKey{harness, session}] = metadata
+	}
+	sessionRepositories := map[sessionKey]*string{}
+	attempted := map[sessionKey]bool{}
 	for _, entry := range entries {
-		key := entry.Event.Harness + ":" + entry.Event.SessionID
+		key := sessionKey{entry.Event.Harness, entry.Event.SessionID}
 		metadata, ok := t3[key]
 		if !ok || attempted[key] || isRemote(repository(entry.Event.Project)) {
 			continue
@@ -395,7 +400,7 @@ func (c *Collector) Collect(ctx context.Context) Collection {
 	events := make([]Event, 0, len(entries))
 	for _, entry := range entries {
 		e := entry.Event
-		key := e.Harness + ":" + e.SessionID
+		key := sessionKey{e.Harness, e.SessionID}
 		metadata, hasMetadata := t3[key]
 		if title, ok := titles[e.SessionID]; ok {
 			e.SessionTitle = title

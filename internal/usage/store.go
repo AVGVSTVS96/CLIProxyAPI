@@ -300,14 +300,16 @@ func (s *FileStore) Apply(batch Batch, fill bool) (Result, error) {
 		if previous != nil && eventsEqual(&normalized, previous) {
 			continue
 		}
-		s.intern(&normalized)
+		saved := new(Event)
+		*saved = normalized
+		s.intern(saved)
 		if exists {
 			result.Updated++
 		} else {
 			result.Accepted++
 		}
-		log.put(normalized)
-		lines = append(lines, journalLine{Event: &normalized})
+		log.put(*saved)
+		lines = append(lines, journalLine{Event: saved})
 	}
 	if !fill {
 		for _, deleted := range batch.DeletedIDs {
