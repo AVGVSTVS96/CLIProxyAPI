@@ -395,7 +395,7 @@ func TestDraftsAndPlugins(t *testing.T) {
 	if skill.Kind != "skill" || skill.Name != "x" || skill.Description != "Read X as he sees it." || *skill.Scope != "user" {
 		t.Fatalf("skill = %+v", skill)
 	}
-	if hook.Kind != "hook" || hook.Name != "PreToolUse" || hook.Description != "guard.sh" || *hook.Scope != "user" {
+	if hook.Kind != "hook" || hook.Name != "PreToolUse" || hook.Description != "guard.sh" || *hook.Scope != "user" || *hook.State != "Bash" {
 		t.Fatalf("hook = %+v", hook)
 	}
 	if channel.Kind != "channel" || *channel.Version != "0.2.0" || channel.Description != "Telegram channel" || *channel.State != "connected" ||

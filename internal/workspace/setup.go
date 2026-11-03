@@ -156,16 +156,23 @@ func hooks(from claudeSettings, scope, file string, s settings) []Plugin {
 		events = append(events, event)
 	}
 	slices.Sort(events)
+	source := s.sourceOf(file)
+	if real, err := filepath.EvalSymlinks(file); err == nil && source == nil {
+		source = s.sourceOf(real)
+	}
 	var list []Plugin
 	for _, event := range events {
-		var commands []string
+		var commands, matchers []string
 		for _, group := range from.Hooks[event] {
+			if group.Matcher != "" {
+				matchers = append(matchers, group.Matcher)
+			}
 			for _, hook := range group.Hooks {
 				commands = append(commands, hook.Command)
 			}
 		}
 		list = append(list, Plugin{ID: "hook:" + scope + ":" + event, Name: event, Kind: "hook",
-			Description: strings.Join(commands, "\n"), Scope: text(scope), Source: s.sourceOf(file)})
+			Description: strings.Join(commands, "\n"), Scope: text(scope), State: text(strings.Join(matchers, " · ")), Source: source})
 	}
 	return list
 }
