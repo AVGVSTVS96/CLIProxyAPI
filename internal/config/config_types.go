@@ -508,6 +508,9 @@ type PoolConfig struct {
 	// AgentSDKFiveHourFactor is how many interactive tokens one Agent SDK or `claude -p` token
 	// costs on the five-hour meter. The weekly meter charges both alike. Default 1.7.
 	AgentSDKFiveHourFactor float64 `yaml:"agent-sdk-five-hour-factor,omitempty" json:"agent-sdk-five-hour-factor,omitempty"`
+	// ResetCommand is a shell command run with one line about each limit reset the pool spends
+	// as its last argument. Empty runs nothing.
+	ResetCommand string `yaml:"reset-command,omitempty" json:"reset-command,omitempty"`
 }
 
 // DefaultAgentSDKFiveHourFactor is the five-hour rate a controlled A/B on one Max account

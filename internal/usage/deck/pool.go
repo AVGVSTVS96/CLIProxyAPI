@@ -44,7 +44,11 @@ type Account struct {
 	Working     int         `json:"working"`
 	Idle        int         `json:"idle"`
 	HeldResets  []HeldReset `json:"heldResets"`
-	AtLimit     any         `json:"atLimit"`
+	// When the pool spends this account's held reset, or why it keeps it.
+	ResetPlan string `json:"resetPlan,omitempty"`
+	// When the pool spent this account's resets (unix ms), oldest first.
+	ResetsSpent []int64 `json:"resetsSpent"`
+	AtLimit     any     `json:"atLimit"`
 }
 
 // Policy is the pool's cutoffs.
@@ -139,7 +143,7 @@ func reasonsOf(a coreauth.PoolRow, snap coreauth.PoolSnapshot) []string {
 	}
 	var reasons []string
 	if a.HoldsReset {
-		reasons = append(reasons, "Holds a limit reset, so its week gets used first.")
+		reasons = append(reasons, "Holds a limit reset, so its week gets used first and the reset clears a whole one.")
 	}
 	if a.Comfortable {
 		return append(reasons, "Has room for another working session.")
@@ -181,11 +185,13 @@ func parsePool(snap coreauth.PoolSnapshot, revision string, seats []seat) *poolS
 	for rank, a := range snap.Accounts {
 		account := &Account{
 			ID: a.Account, Label: a.Email, Rank: ptr(rank + 1), Standing: standingOf(a, rank), Reasons: reasonsOf(a, snap),
-			FiveHour:   windowOf(a.Reading.FiveHour, a.Reading.At, fiveHours, snap.SessionCutoff),
-			Week:       windowOf(a.Reading.Week, a.Reading.At, weekMs, snap.WeeklyCutoff),
-			Working:    a.Working,
-			HeldResets: []HeldReset{},
-			AtLimit:    a.AtLimit,
+			FiveHour:    windowOf(a.Reading.FiveHour, a.Reading.At, fiveHours, snap.SessionCutoff),
+			Week:        windowOf(a.Reading.Week, a.Reading.At, weekMs, snap.WeeklyCutoff),
+			Working:     a.Working,
+			HeldResets:  []HeldReset{},
+			ResetPlan:   a.ResetPlan,
+			ResetsSpent: append([]int64{}, a.ResetsSpent...),
+			AtLimit:     a.AtLimit,
 		}
 		if a.Plan != nil {
 			account.Plan = planOf(a.Plan.Tier)

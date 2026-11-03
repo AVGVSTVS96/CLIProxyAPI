@@ -25,8 +25,8 @@ import (
 // The pool spends every Claude account's weekly limit before it resets without letting
 // any one hit its five-hour limit. It ranks accounts for new sessions (QuotaSelector),
 // moves a bound session off an account nearing a cutoff, samples each account's limits,
-// held resets and plan from Anthropic, and records which account each Claude Code session
-// runs on. Held resets are only ever read: spending one stays a person's decision.
+// held resets and plan from Anthropic, spends a held weekly reset when the pool needs it
+// (pool_resets.go), and records which account each Claude Code session runs on.
 // Agent SDK and `claude -p` sessions drain the five-hour limit faster than interactive
 // ones, so they weigh routing.pool.agent-sdk-five-hour-factor sessions each there.
 
@@ -58,10 +58,13 @@ type PoolReading struct {
 
 // PoolReset is a limit reset the account holds.
 type PoolReset struct {
+	ID        string `json:"id"`
 	Kind      string `json:"kind"`
 	Left      int    `json:"left"`
 	ExpiresAt *int64 `json:"expiresAt"`
 	Paused    bool   `json:"paused"`
+	UsableNow bool   `json:"usableNow"`
+	Weekly    bool   `json:"weekly"`
 }
 
 // PoolPlan is the account's subscription, from its profile.
@@ -81,6 +84,7 @@ type poolAccount struct {
 	plan        *PoolPlan
 	retryAt     int64
 	needsReauth bool
+	claim       *poolClaim
 }
 
 type poolSeat struct {
@@ -222,6 +226,8 @@ type PoolRow struct {
 	NeedsReauth   bool        `json:"needsReauth"`
 	Disabled      bool        `json:"disabled"`
 	SignInExpires string      `json:"signInExpires"`
+	ResetPlan     string      `json:"resetPlan,omitempty"`
+	ResetsSpent   []int64     `json:"resetsSpent,omitempty"`
 	auth          *Auth
 	five, week    float64
 }
@@ -256,8 +262,8 @@ func nextReset(at int64, now time.Time, period time.Duration) int64 {
 }
 
 // rankLocked orders Claude accounts the way tokenhub did: accounts under both cutoffs first;
-// among them one holding a reset, then those with their share of five-hour room per working
-// session, then sampled ones; then the account whose remaining week runs out soonest, then
+// among them one holding a reset, so its week runs out first and the reset clears a whole
+// one, then those with their share of five-hour room per working session, then sampled ones; then the account whose remaining week runs out soonest, then
 // the most five-hour room per working session. With nothing open, the most real room wins.
 // Room is shared by load, the weighted working sessions plus the incoming one's weight; an
 // account whose plan has no five-hour limit, like a verified Ultra one, counts sessions alike.
@@ -584,54 +590,70 @@ func (p *claudePoolState) sample(ctx context.Context, auths []*Auth) {
 				p.writeState(filepath.Join("plans", j.account+".json"), plan)
 			}
 		}
-		if !j.usage && !j.resets {
-			continue
-		}
-		var body struct {
-			FiveHour *usageWindow `json:"five_hour"`
-			SevenDay *usageWindow `json:"seven_day"`
-			Cedar    *struct {
-				Grants []map[string]any `json:"grants"`
-			} `json:"cedar_ember"`
-			Juniper *struct {
-				Eligible  bool    `json:"eligible"`
-				Available bool    `json:"available"`
-				NextAt    *string `json:"next_available_at"`
-			} `json:"juniper_tide"`
-		}
-		status, retry := p.get(ctx, token, "/api/oauth/usage?cedar_ember=1&at_wall=1&skip_spend=1", &body)
-		p.mu.Lock()
-		a := p.account(j.account)
-		a.needsReauth = status == http.StatusUnauthorized
-		switch {
-		case status == http.StatusTooManyRequests:
-			a.retryAt = now.Add(retry).UnixMilli()
-		case status == http.StatusOK:
-			a.reading = PoolReading{FiveHour: body.FiveHour.window(), Week: body.SevenDay.window(), At: now.UnixMilli()}
-			p.logReadingLocked(j.account, a.reading)
-			a.resets = []PoolReset{}
-			if body.Cedar != nil {
-				for _, g := range body.Cedar.Grants {
-					if left, _ := g["resets_left"].(float64); left > 0 {
-						ends, _ := g["ends_at"].(string)
-						paused, _ := g["paused"].(bool)
-						a.resets = append(a.resets, PoolReset{Kind: resetKind(g), Left: int(left), ExpiresAt: isoMillis(&ends), Paused: paused})
-					}
-				}
-			}
-			a.atLimit = nil
-			if body.Juniper != nil && body.Juniper.Eligible {
-				a.atLimit = map[string]any{"available": body.Juniper.Available, "nextAt": isoMillis(body.Juniper.NextAt)}
-			}
-			a.resetsAt = now.UnixMilli()
-		}
-		resets := map[string]any{"held": a.resets, "atLimit": a.atLimit, "at": now.UnixMilli()}
-		p.mu.Unlock()
-		if status == http.StatusOK {
-			p.writeState(filepath.Join("resets", j.account+".json"), resets)
+		if j.usage || j.resets {
+			p.readUsage(ctx, j.account, token, now)
 		}
 	}
+	p.spendReset(ctx, auths, now)
 	p.writeAccounts(auths)
+}
+
+// readUsage reads an account's limits and held resets from Anthropic's usage endpoint.
+func (p *claudePoolState) readUsage(ctx context.Context, account, token string, now time.Time) {
+	var body struct {
+		FiveHour *usageWindow `json:"five_hour"`
+		SevenDay *usageWindow `json:"seven_day"`
+		Cedar    *struct {
+			Grants []map[string]any `json:"grants"`
+		} `json:"cedar_ember"`
+		Juniper *struct {
+			Eligible  bool    `json:"eligible"`
+			Available bool    `json:"available"`
+			NextAt    *string `json:"next_available_at"`
+		} `json:"juniper_tide"`
+	}
+	status, retry := p.get(ctx, token, "/api/oauth/usage?cedar_ember=1&at_wall=1&skip_spend=1", &body)
+	p.mu.Lock()
+	a := p.account(account)
+	a.needsReauth = status == http.StatusUnauthorized
+	switch {
+	case status == http.StatusTooManyRequests:
+		a.retryAt = now.Add(retry).UnixMilli()
+	case status == http.StatusOK:
+		a.reading = PoolReading{FiveHour: body.FiveHour.window(), Week: body.SevenDay.window(), At: now.UnixMilli()}
+		p.logReadingLocked(account, a.reading)
+		a.resets = []PoolReset{}
+		if body.Cedar != nil {
+			for _, g := range body.Cedar.Grants {
+				if left, _ := g["resets_left"].(float64); left > 0 {
+					a.resets = append(a.resets, grantReset(g, int(left)))
+				}
+			}
+		}
+		a.atLimit = nil
+		if body.Juniper != nil && body.Juniper.Eligible {
+			a.atLimit = map[string]any{"available": body.Juniper.Available, "nextAt": isoMillis(body.Juniper.NextAt)}
+		}
+		a.resetsAt = now.UnixMilli()
+	}
+	resets := map[string]any{"held": a.resets, "atLimit": a.atLimit, "at": now.UnixMilli()}
+	p.mu.Unlock()
+	if status == http.StatusOK {
+		p.writeState(filepath.Join("resets", account+".json"), resets)
+	}
+}
+
+func grantReset(g map[string]any, left int) PoolReset {
+	id, _ := g["id"].(string)
+	ends, _ := g["ends_at"].(string)
+	paused, _ := g["paused"].(bool)
+	usable, _ := g["usable_now"].(bool)
+	clears, _ := g["clears"].([]any)
+	weekly := false
+	for _, c := range clears {
+		weekly = weekly || c == "seven_day"
+	}
+	return PoolReset{ID: id, Kind: resetKind(g), Left: left, ExpiresAt: isoMillis(&ends), Paused: paused, UsableNow: usable, Weekly: weekly}
 }
 
 type usageWindow struct {
@@ -785,11 +807,23 @@ func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 			enabled = append(enabled, a)
 		}
 	}
-	rows := claudePool.rankLocked(enabled, time.Now(), 1)
+	now := time.Now()
+	rows := claudePool.rankLocked(enabled, now, 1)
+	if plan := claudePool.planResetLocked(rows, now); plan.row != nil {
+		for i := range rows {
+			if rows[i].Account == plan.row.Account {
+				rows[i].ResetPlan = plan.plan
+			}
+		}
+	}
 	for _, a := range auths {
 		if a.Disabled && isClaudeAuth(a) {
-			rows = append(rows, claudePool.rankLocked([]*Auth{a}, time.Now(), 1)...)
+			rows = append(rows, claudePool.rankLocked([]*Auth{a}, now, 1)...)
 		}
+	}
+	spent := claudePool.spentLocked()
+	for i := range rows {
+		rows[i].ResetsSpent = spent[rows[i].Account]
 	}
 	decision := "No Claude account can take a new session."
 	if len(rows) > 0 && rows[0].Usable {
