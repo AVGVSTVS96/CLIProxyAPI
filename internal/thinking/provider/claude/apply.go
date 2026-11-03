@@ -92,7 +92,9 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		// (Claude 4.6 uses output_config.effort.)
 		if supportsAdaptive && config.Level != "" {
 			result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
-			result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
+			if gjson.GetBytes(result, "thinking.budget_tokens").Exists() {
+				result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
+			}
 			result, _ = sjson.SetBytes(result, "output_config.effort", string(config.Level))
 			return result, nil
 		}

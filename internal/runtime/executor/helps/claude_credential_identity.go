@@ -13,6 +13,7 @@ import (
 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -87,7 +88,7 @@ func claudeAgentSessionUUID(headers http.Header, originalPayload, translatedPayl
 }
 
 func withoutClaudeMetadataUserID(payload []byte) []byte {
-	if len(payload) == 0 {
+	if !gjson.GetBytes(payload, "metadata.user_id").Exists() {
 		return payload
 	}
 	updated, errDelete := sjson.DeleteBytes(payload, "metadata.user_id")

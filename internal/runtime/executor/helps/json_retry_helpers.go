@@ -11,9 +11,10 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// DeleteJSONField removes a top-level or nested JSON field from a payload.
+// DeleteJSONField removes a top-level or nested JSON field from a payload,
+// returning the payload itself when the field is absent.
 func DeleteJSONField(body []byte, key string) []byte {
-	if key == "" || len(body) == 0 {
+	if key == "" || !gjson.GetBytes(body, key).Exists() {
 		return body
 	}
 	updated, err := sjson.DeleteBytes(body, key)

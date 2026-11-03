@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 )
 
@@ -74,7 +75,7 @@ func NormalizeClaudeToolCallIDs(body []byte) []byte {
 	}
 	var fields []idField
 	used := make(map[string]bool)
-	for _, message := range gjson.GetBytes(body, "messages").Array() {
+	for _, message := range util.GetGJSONBytesNoCopy(body, "messages").Array() {
 		for _, block := range message.Get("content").Array() {
 			field := ""
 			switch block.Get("type").String() {

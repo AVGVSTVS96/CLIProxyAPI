@@ -361,7 +361,7 @@ func claudeThinkingTypeAcceptsBlockBinding(model, thinkingType string) bool {
 // block, i.e. history Anthropic subjects to prefix binding validation.
 func claudeBodyHasSignedThinkingBlock(body []byte) bool {
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+	util.GetGJSONBytesNoCopy(body, "messages").ForEach(func(_, msg gjson.Result) bool {
 		msg.Get("content").ForEach(func(_, block gjson.Result) bool {
 			switch strings.TrimSpace(block.Get("type").String()) {
 			case "thinking":
@@ -464,7 +464,7 @@ func claudeIncludePerTurnTiming(body []byte, requested map[string]bool) bool {
 		return true
 	}
 	found := false
-	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+	util.GetGJSONBytesNoCopy(body, "messages").ForEach(func(_, msg gjson.Result) bool {
 		if msg.Get("output_config.timing").Exists() {
 			found = true
 			return false
@@ -941,10 +941,10 @@ func normalizeClaudeSamplingForUpstream(body []byte, nativeOwned bool) []byte {
 	}
 
 	if !nativeOwned {
-		body, _ = sjson.DeleteBytes(body, "temperature")
-		body, _ = sjson.DeleteBytes(body, "top_p")
+		body = helps.DeleteJSONField(body, "temperature")
+		body = helps.DeleteJSONField(body, "top_p")
 		if thinkingActive {
-			body, _ = sjson.DeleteBytes(body, "top_k")
+			body = helps.DeleteJSONField(body, "top_k")
 		}
 		return body
 	}
@@ -956,7 +956,7 @@ func normalizeClaudeSamplingForUpstream(body []byte, nativeOwned bool) []byte {
 		if topP := gjson.GetBytes(body, "top_p"); topP.Exists() && topP.Num < 0.95 {
 			body, _ = sjson.DeleteBytes(body, "top_p")
 		}
-		body, _ = sjson.DeleteBytes(body, "top_k")
+		body = helps.DeleteJSONField(body, "top_k")
 		return body
 	}
 	// Anthropic accepts either one but not both; temperature is the knob native
@@ -1921,7 +1921,7 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 
 	// 3. Rename tool references in messages while every Result.Index still
 	// points into the original request bytes.
-	messages := gjson.GetBytes(body, "messages")
+	messages := util.GetGJSONBytesNoCopy(body, "messages")
 	validOffsets := true
 	if messages.Exists() && messages.IsArray() {
 		messages.ForEach(func(_, msg gjson.Result) bool {

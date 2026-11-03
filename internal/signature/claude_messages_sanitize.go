@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -44,7 +45,7 @@ func IsCodexCommentarySignatureMarker(rawSignature string) bool {
 // with empty thinking text are dropped because they carry no history. When no
 // marker is present the payload is returned unchanged.
 func RestoreCodexCommentaryMarkers(payload []byte) ([]byte, int) {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return payload, 0
 	}
@@ -139,7 +140,7 @@ func SanitizeClaudeMessagesSignaturesForTarget(payload []byte, opts ClaudeMessag
 	}
 	report := SignatureSanitizeReport{TargetProvider: targetProvider}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return payload, report
 	}

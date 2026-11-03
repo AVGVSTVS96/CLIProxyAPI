@@ -812,7 +812,7 @@ func claudeCallerSystemReminder(text string) string {
 // advisor result to the conversation layout; any mid-conversation system splice
 // shifts message indices and causes upstream 400 errors.
 func claudeHistoryHasAdvisorCallOrResult(payload []byte) bool {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return false
 	}
@@ -904,7 +904,7 @@ func insertClaudeMidConversationSystemBlocks(payload []byte, blocks []forwardedC
 		return payload
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.IsArray() {
 		return payload
 	}
@@ -1281,7 +1281,7 @@ Today's date is %s.
 }
 
 func firstClaudeUserMessageIndex(payload []byte) int {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() {
 		return -1
 	}
@@ -2072,7 +2072,7 @@ func forEachClaudeCacheControlBlock(payload []byte, visit func(path string, bloc
 			return true
 		})
 	}
-	if messages := gjson.GetBytes(payload, "messages"); messages.IsArray() {
+	if messages := util.GetGJSONBytesNoCopy(payload, "messages"); messages.IsArray() {
 		messages.ForEach(func(msgIdx, message gjson.Result) bool {
 			content := message.Get("content")
 			if !content.IsArray() {
@@ -2160,7 +2160,7 @@ func countCacheControls(payload []byte) int {
 	}
 
 	// Check messages
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(_, msg gjson.Result) bool {
 			content := msg.Get("content")
@@ -2237,7 +2237,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 		})
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(msgIdx, msg gjson.Result) bool {
 			content := msg.Get("content")
@@ -2364,7 +2364,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 		return payload
 	}
 
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(msgIdx, msg gjson.Result) bool {
 			if excess <= 0 {
@@ -2460,7 +2460,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 // stamping the last element of an existing array. Markers on other messages must
 // not suppress this rolling write.
 func injectMessagesCacheControl(payload []byte) []byte {
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() {
 		return payload
 	}

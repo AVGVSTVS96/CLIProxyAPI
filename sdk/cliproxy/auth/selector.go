@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 )
@@ -1901,7 +1902,7 @@ func extractMessageHashIDs(payload []byte) (primaryID, fallbackID string) {
 	var systemPrompt, firstUserMsg, firstAssistantMsg string
 
 	// OpenAI/Claude messages format
-	messages := gjson.GetBytes(payload, "messages")
+	messages := util.GetGJSONBytesNoCopy(payload, "messages")
 	if messages.Exists() && messages.IsArray() {
 		messages.ForEach(func(_, msg gjson.Result) bool {
 			role := msg.Get("role").String()
