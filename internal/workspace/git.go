@@ -64,6 +64,8 @@ type FileBody struct {
 	Original *string `json:"original"`
 	Binary   bool    `json:"binary"`
 	TooLarge bool    `json:"tooLarge"`
+	Size     int64   `json:"size"`
+	Last     *Commit `json:"last"`
 }
 
 // Shipped is what a ship did: the live branch it fast-forwarded, or the pull request it opened.
@@ -444,15 +446,18 @@ func (w *Service) Read(id, path string) (FileBody, error) {
 	case info.IsDir():
 		return FileBody{}, refuse("%s is a folder", path)
 	case info.Size() > maxBytes:
-		body.TooLarge = true
+		body.TooLarge, body.Size = true, info.Size()
+		body.Last = w.lastCommit(ws, rel)
 		return body, nil
 	default:
+		body.Size = info.Size()
 		data, err := root.ReadFile(rel)
 		if err != nil {
 			return FileBody{}, refuse("Can't read %s: %v", path, err)
 		}
 		if isBinary(data) {
 			body.Binary = true
+			body.Last = w.lastCommit(ws, rel)
 			return body, nil
 		}
 		text := string(data)
@@ -465,7 +470,57 @@ func (w *Service) Read(id, path string) (FileBody, error) {
 	if out, ok := w.try(ws.Path, "cat-file", "blob", fork+":"+filepath.ToSlash(rel)); ok && len(out) <= maxBytes && !isBinary([]byte(out)) {
 		body.Original = &out
 	}
+	body.Last = w.lastCommit(ws, rel)
 	return body, nil
+}
+
+// lastCommit is the newest commit on HEAD that touched a path, or nil for a file git never committed.
+func (w *Service) lastCommit(ws Workspace, rel string) *Commit {
+	out, ok := w.try(ws.Path, "log", "-1", "--pretty=raw", "--no-color", "HEAD", "--", filepath.ToSlash(rel))
+	if !ok {
+		return nil
+	}
+	c, found := parseRaw(out)
+	if !found {
+		return nil
+	}
+	return &c.Commit
+}
+
+// imageTypes are the files Raw serves, by extension: pictures a browser shows in an <img>.
+var imageTypes = map[string]string{
+	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+	".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon", ".bmp": "image/bmp",
+}
+
+// Raw returns an image file's bytes and content type; SVG stays text, so it never runs as a page.
+func (w *Service) Raw(id, path string) ([]byte, string, error) {
+	_, ws, err := w.workspace(id)
+	if err != nil {
+		return nil, "", err
+	}
+	rel, err := clean(path)
+	if err != nil {
+		return nil, "", err
+	}
+	kind, ok := imageTypes[strings.ToLower(filepath.Ext(rel))]
+	if !ok {
+		return nil, "", refuse("Only pictures are served raw: %s", path)
+	}
+	root, err := os.OpenRoot(ws.Path)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = root.Close() }()
+	info, err := root.Stat(rel)
+	if err != nil {
+		return nil, "", notFound("No file %s", path)
+	}
+	if info.Size() > maxBytes*5 {
+		return nil, "", refuse("%s is over 10 MB", path)
+	}
+	data, err := root.ReadFile(rel)
+	return data, kind, err
 }
 
 // Write saves a file in a worktree.

@@ -85,6 +85,16 @@ func (w *Service) Register(group *gin.RouterGroup) {
 		file, err := w.Read(c.Param("ws"), c.Query("path"))
 		reply(c, file, err)
 	})
+	group.GET("/ws/:ws/raw", func(c *gin.Context) {
+		data, kind, err := w.Raw(c.Param("ws"), c.Query("path"))
+		if err != nil {
+			reply(c, nil, err)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Data(http.StatusOK, kind, data)
+	})
 	group.PUT("/ws/:ws/file", func(c *gin.Context) {
 		data, err := raw(c)
 		if err == nil {
@@ -112,7 +122,7 @@ func (w *Service) Register(group *gin.RouterGroup) {
 		if err != nil || limit < 1 {
 			limit = 50
 		}
-		commits, err := w.Commits(c.Param("ws"), min(limit, 500))
+		commits, err := w.Commits(c.Param("ws"), min(limit, 500), c.Query("path"))
 		reply(c, commits, err)
 	})
 	group.GET("/ws/:ws/commits/:sha", func(c *gin.Context) {

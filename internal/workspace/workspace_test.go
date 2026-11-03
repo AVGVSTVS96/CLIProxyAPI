@@ -167,7 +167,7 @@ func TestEditCommitShip(t *testing.T) {
 		t.Fatalf("after commit = %+v", changes)
 	}
 
-	commits, err := w.Commits(id, 10)
+	commits, err := w.Commits(id, 10, "")
 	if err != nil || len(commits) != 2 || commits[0].SHA != sha || commits[0].Subject != "edit a" || !commits[0].Signed || commits[1].Signed ||
 		commits[0].Author != "Test" || time.Since(time.UnixMilli(commits[0].At)) > time.Hour {
 		t.Fatalf("commits = %+v, %v", commits, err)
@@ -471,5 +471,42 @@ func TestSetConfigFollowsReloads(t *testing.T) {
 	w.SetConfig(cfg)
 	if _, err := w.executorOrMissing(); status(err) != http.StatusNotFound {
 		t.Fatalf("executor after removing it: %v", err)
+	}
+}
+
+func TestReadHistoryAndRaw(t *testing.T) {
+	w, live := setup(t, false)
+	write(t, filepath.Join(live, "b.txt"), "bee\n")
+	write(t, filepath.Join(live, "pic.png"), "\x89PNG\r\n\x1a\n\x00data")
+	sh(t, live, "add", "-A")
+	sh(t, live, "commit", "-q", "-m", "add b and a picture")
+
+	body, err := w.Read("hex", "a.txt")
+	if err != nil || body.Size != 14 || body.Last == nil || body.Last.Subject != "first" {
+		t.Fatalf("read a.txt = %+v %+v, %v", body, body.Last, err)
+	}
+	if body, _ := w.Read("hex", "pic.png"); !body.Binary || body.Last == nil || body.Last.Subject != "add b and a picture" {
+		t.Fatalf("read pic.png = %+v", body)
+	}
+	write(t, filepath.Join(live, "new.txt"), "fresh\n")
+	if body, _ := w.Read("hex", "new.txt"); body.Last != nil || body.Size != 6 {
+		t.Fatalf("an uncommitted file has no last commit: %+v", body)
+	}
+
+	all, _ := w.Commits("hex", 10, "")
+	onlyA, err := w.Commits("hex", 10, "a.txt")
+	if err != nil || len(all) != 2 || len(onlyA) != 1 || onlyA[0].Subject != "first" {
+		t.Fatalf("commits all=%d a.txt=%+v, %v", len(all), onlyA, err)
+	}
+	if _, err := w.Commits("hex", 10, "../x"); status(err) != http.StatusConflict {
+		t.Fatalf("path outside: %v", err)
+	}
+
+	data, kind, err := w.Raw("hex", "pic.png")
+	if err != nil || kind != "image/png" || !strings.HasPrefix(string(data), "\x89PNG") {
+		t.Fatalf("raw = %q %s, %v", data, kind, err)
+	}
+	if _, _, err := w.Raw("hex", "a.txt"); status(err) != http.StatusConflict {
+		t.Fatalf("raw text file: %v", err)
 	}
 }

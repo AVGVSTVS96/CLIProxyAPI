@@ -68,13 +68,21 @@ func parseRaw(record string) (CommitDetail, bool) {
 	return c, c.SHA != ""
 }
 
-// Commits lists the newest commits on a workspace's HEAD.
-func (w *Service) Commits(id string, limit int) ([]Commit, error) {
+// Commits lists the newest commits on a workspace's HEAD, or only those that touched path.
+func (w *Service) Commits(id string, limit int, path string) ([]Commit, error) {
 	_, ws, err := w.workspace(id)
 	if err != nil {
 		return nil, err
 	}
-	out, err := w.git(ws.Path, "log", "-z", "--pretty=raw", "--no-color", "-n", strconv.Itoa(limit), "HEAD")
+	args := []string{"log", "-z", "--pretty=raw", "--no-color", "-n", strconv.Itoa(limit), "HEAD", "--"}
+	if path != "" {
+		rel, err := clean(path)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, filepath.ToSlash(rel))
+	}
+	out, err := w.git(ws.Path, args...)
 	if err != nil {
 		return nil, err
 	}
