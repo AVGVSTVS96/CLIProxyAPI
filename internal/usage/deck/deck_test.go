@@ -71,7 +71,7 @@ func TestLimitRisesSplitByCost(t *testing.T) {
 		{Account: account, At: 200_000, FiveHour: f(10), FiveHourResetsAt: reset},
 		{Account: account, At: 300_000, FiveHour: f(13), FiveHourResetsAt: reset},
 	}
-	windows, charges := attributeLimits(readings, accountLookup(history), events)
+	windows, charges := attributeLimits(readings, accountLookup(history), events, 1)
 	if len(windows) != 1 {
 		t.Fatalf("%d windows", len(windows))
 	}
@@ -185,5 +185,29 @@ func TestPlanRateSpreadsMonthlyFees(t *testing.T) {
 	}
 	if got := p.price(&events[2]); got != 70 {
 		t.Fatalf("an uncovered provider's plan $ %v", got)
+	}
+}
+
+func TestAgentSDKRequestsCarryTheFactorOnTheFiveHourLimitOnly(t *testing.T) {
+	account := "acct"
+	history := bindingHistory([]Binding{
+		{SessionID: "sdk", AccountID: &account, Event: "start", millis: 0},
+		{SessionID: "tui", AccountID: &account, Event: "start", millis: 0},
+	})
+	events := preparedEvents(
+		usage.Event{Harness: "claude", SessionID: "sdk", Timestamp: "1970-01-01T00:01:40.000Z", CostUSD: 1, Entrypoint: "sdk-cli"},
+		usage.Event{Harness: "claude", SessionID: "tui", Timestamp: "1970-01-01T00:01:50.000Z", CostUSD: 1, Entrypoint: "cli"},
+	)
+	reset, weekReset := f(1e9), f(2e9)
+	readings := []LimitReading{
+		{Account: account, At: 50_000, FiveHour: f(1), FiveHourResetsAt: reset, Week: f(1), WeekResetsAt: weekReset},
+		{Account: account, At: 200_000, FiveHour: f(4), FiveHourResetsAt: reset, Week: f(3), WeekResetsAt: weekReset},
+	}
+	_, charges := attributeLimits(readings, accountLookup(history), events, 2)
+	if charges[0].points[0] != 2 || charges[1].points[0] != 1 {
+		t.Fatalf("five-hour charges %v and %v, want 2 and 1", charges[0].points[0], charges[1].points[0])
+	}
+	if charges[0].points[1] != 1 || charges[1].points[1] != 1 {
+		t.Fatalf("week charges %v and %v, want 1 and 1", charges[0].points[1], charges[1].points[1])
 	}
 }

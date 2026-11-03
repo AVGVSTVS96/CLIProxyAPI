@@ -345,7 +345,7 @@ func parseClaude(r io.Reader, file string) (*parsedFile, error) {
 	title := ""
 	err := parseRecords(r, parsed, func(record gjson.Result, line int) bool {
 		f := fields(record, "type", "customTitle", "agentName", "message", "timestamp", "sessionId", "requestId",
-			"uuid", "ordinal", "cwd", "isSidechain")
+			"uuid", "ordinal", "cwd", "isSidechain", "entrypoint")
 		kind, message := f[0], f[3]
 		if isString(kind, "custom-title") || isString(kind, "agent-name") {
 			value := f[1]
@@ -383,6 +383,7 @@ func parseClaude(r io.Reader, file string) (*parsedFile, error) {
 		}
 		sidechain := f[10].Type == gjson.True
 		cwd := strs.get(text(f[9]))
+		via := strs.get(text(f[11]))
 		parentTier := tierOf(usage, "")
 		firstEntry := len(parsed.Events)
 		appendUsage := func(usage gjson.Result, model gjson.Result, usageID string, advisor bool) {
@@ -392,6 +393,7 @@ func parseClaude(r io.Reader, file string) (*parsedFile, error) {
 			details := fields(u[1], "thinking_tokens", "reasoning_tokens")
 			e := newEvent("claude", stamp, session, strs.get(modelName(model)), cwd)
 			e.ID = usageID
+			e.Entrypoint = via
 			e.InputTokens = number(u[2])
 			e.OutputTokens = number(u[3])
 			e.CacheReadTokens = number(u[4])

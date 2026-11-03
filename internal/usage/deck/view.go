@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/entrypoint"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
@@ -17,9 +18,9 @@ const (
 )
 
 var (
-	groupings  = []string{"agent", "session", "project", "model", "harness", "device", "account"}
+	groupings  = []string{"agent", "session", "project", "model", "harness", "entrypoint", "device", "account"}
 	measures   = []string{"tokens", "api", "plan", "fiveHour", "week"}
-	dimensions = []string{"app", "harness", "model", "project", "device", "account"}
+	dimensions = []string{"app", "harness", "entrypoint", "model", "project", "device", "account"}
 )
 
 // Query is what the Usage page asks for.
@@ -111,9 +112,22 @@ type Row struct {
 	Sessions     int             `json:"sessions"`
 	LastActiveAt float64         `json:"lastActiveAt"`
 	// The chosen measure per bucket of the view's buckets.
-	Series     []float64 `json:"series"`
-	Live       *string   `json:"live"`
+	Series []float64 `json:"series"`
+	Live   *string   `json:"live"`
+	// Entrypoint is the one its sessions share, "mixed" when they differ, "" when unknown.
+	Entrypoint string `json:"entrypoint"`
+	// AgentSDK is the share of its API value that ran on the Agent SDK or `claude -p`, 0 to 1.
+	AgentSDK   float64 `json:"agentSdk"`
 	sessionIDs map[string]bool
+}
+
+// AgentSDKUsage is how much of the view ran on the Agent SDK or `claude -p`, which the
+// five-hour meter charges Factor times more per token than interactive Claude Code.
+type AgentSDKUsage struct {
+	APIUSD   float64  `json:"apiUsd"`
+	Share    float64  `json:"share"`
+	FiveHour *float64 `json:"fiveHour"`
+	Factor   float64  `json:"factor"`
 }
 
 // Bucket is one chart bucket's start and size.
@@ -171,6 +185,7 @@ type UsageView struct {
 	Coverage Coverage           `json:"coverage"`
 	Facets   map[string][]Facet `json:"facets"`
 	Sources  Sources            `json:"sources"`
+	AgentSDK AgentSDKUsage      `json:"agentSdk"`
 }
 
 // Labels are what people call accounts and devices.
@@ -301,8 +316,25 @@ func dimensionOf(dimension string, p *part) string {
 		return p.session.Project
 	case "device":
 		return p.session.DeviceID
+	case "entrypoint":
+		return entrypointOf(p.session)
 	}
 	return p.account
+}
+
+func entrypointOf(s *Session) string {
+	if s.Entrypoint == "" {
+		return "unknown"
+	}
+	return s.Entrypoint
+}
+
+var entrypointNames = map[string]string{
+	"cli":     "Interactive",
+	"sdk-cli": "claude -p (Agent SDK)",
+	"sdk-ts":  "Agent SDK, TypeScript",
+	"sdk-py":  "Agent SDK, Python",
+	"unknown": "Not recorded",
 }
 
 // nameOf is what people call a dimension's value: account and device labels,
@@ -320,11 +352,15 @@ func nameOf(dimension, id string, labels Labels) string {
 		if label, ok := labels.Devices[id]; ok {
 			return label
 		}
+	case "entrypoint":
+		if label, ok := entrypointNames[id]; ok {
+			return label
+		}
 	}
 	return id
 }
 
-var groupDimension = map[string]string{"model": "model", "harness": "harness", "device": "device", "account": "account"}
+var groupDimension = map[string]string{"model": "model", "harness": "harness", "entrypoint": "entrypoint", "device": "device", "account": "account"}
 
 func groupKey(by string, p *part) string {
 	switch by {
@@ -340,6 +376,8 @@ func groupKey(by string, p *part) string {
 		return "h:" + p.session.Harness
 	case "device":
 		return "d:" + p.session.DeviceID
+	case "entrypoint":
+		return "e:" + entrypointOf(p.session)
 	}
 	return "a:" + p.account
 }
@@ -390,6 +428,8 @@ type group struct {
 	sessionIDs         map[string]bool
 	lastActiveAt       float64
 	series             []float64
+	entrypoint         string
+	sdkAPI             float64
 }
 
 func groupParts(parts []part, by, measure string, buckets int, labels Labels) []*group {
@@ -408,6 +448,14 @@ func groupParts(parts []part, by, measure string, buckets int, labels Labels) []
 			groups = append(groups, g)
 		}
 		g.amount.add(p.amount)
+		if via := p.session.Entrypoint; g.entrypoint == "" || g.entrypoint == via {
+			g.entrypoint = via
+		} else if via != "" {
+			g.entrypoint = "mixed"
+		}
+		if entrypoint.AgentSDK(p.session.Entrypoint) {
+			g.sdkAPI += p.amount.APIUSD
+		}
 		g.fiveHour += p.fiveHour
 		g.week += p.week
 		g.sessions[p.session.Key] = true
@@ -496,9 +544,13 @@ func usageView(tracked *SessionUsage, all []part, labels Labels, q Query) *Usage
 
 	var total Amount
 	totalSessions := map[string]bool{}
-	var totalFive, totalWeek, named float64
+	var totalFive, totalWeek, named, sdkAPI, sdkFive float64
 	for i := range parts {
 		total.add(parts[i].amount)
+		if entrypoint.AgentSDK(parts[i].session.Entrypoint) {
+			sdkAPI += parts[i].amount.APIUSD
+			sdkFive += parts[i].fiveHour
+		}
 		totalSessions[parts[i].session.Key] = true
 		totalFive += parts[i].fiveHour
 		totalWeek += parts[i].week
@@ -508,9 +560,13 @@ func usageView(tracked *SessionUsage, all []part, labels Labels, q Query) *Usage
 	}
 	hitRate := func(a Amount) float64 { return ratio(a.CacheRead, a.Input+a.CacheRead+a.CacheWrite) }
 	view := &UsageView{
-		Query:  q,
-		Period: tracked.Period,
-		Totals: Totals{Amount: total, Sessions: len(totalSessions), CacheHitRate: hitRate(total), Points: points(totalFive, totalWeek)},
+		Query:    q,
+		Period:   tracked.Period,
+		Totals:   Totals{Amount: total, Sessions: len(totalSessions), CacheHitRate: hitRate(total), Points: points(totalFive, totalWeek)},
+		AgentSDK: AgentSDKUsage{APIUSD: sdkAPI, Share: ratio(sdkAPI, total.APIUSD), Factor: tracked.SDKFactor},
+	}
+	if limits {
+		view.AgentSDK.FiveHour = ptr(ratio(sdkFive, totalFive))
 	}
 	if len(q.Where) == 0 && q.Within == nil {
 		view.Previous = &Totals{Amount: tracked.Previous.Amount, Sessions: tracked.Previous.Sessions, CacheHitRate: hitRate(tracked.Previous.Amount)}
@@ -572,7 +628,8 @@ func usageView(tracked *SessionUsage, all []part, labels Labels, q Query) *Usage
 		}
 		view.Rows = append(view.Rows, Row{Key: g.key, Label: g.label, Detail: g.detail, Who: g.who, Color: colorOf(g.key),
 			Amount: g.amount, Points: points(g.fiveHour, g.week), ByAccount: byAccount, Sessions: len(g.sessions),
-			LastActiveAt: g.lastActiveAt, Series: g.series, sessionIDs: g.sessionIDs})
+			LastActiveAt: g.lastActiveAt, Series: g.series, Entrypoint: g.entrypoint, AgentSDK: ratio(g.sdkAPI, g.amount.APIUSD),
+			sessionIDs: g.sessionIDs})
 	}
 	view.RowCount = len(shown)
 

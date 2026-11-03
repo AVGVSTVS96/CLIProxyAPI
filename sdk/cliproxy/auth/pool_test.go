@@ -74,14 +74,14 @@ func TestQuotaSelectorPrefersAnAccountHoldingAReset(t *testing.T) {
 func TestMoveAwayLeavesAnAccountNearItsCutoffOnlyForAClearOne(t *testing.T) {
 	resetPool(t)
 	hot, calm := poolAuth("hot", 85, 30, 48*time.Hour), poolAuth("calm", 10, 30, 48*time.Hour)
-	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}); len(rest) != 1 || rest[0].ID != "calm" || level != "early" {
+	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}, nil); len(rest) != 1 || rest[0].ID != "calm" || level != "early" {
 		t.Fatalf("rest = %v, want only calm", rest)
 	}
 	warm := poolAuth("warm", 82, 30, 48*time.Hour)
-	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, warm}); rest != nil {
+	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, warm}, nil); rest != nil {
 		t.Fatalf("moved to an account that is no clearer: %v", rest)
 	}
-	if rest, _ := claudePool.moveAway(calm, []*Auth{hot, calm}); rest != nil {
+	if rest, _ := claudePool.moveAway(calm, []*Auth{hot, calm}, nil); rest != nil {
 		t.Fatalf("moved a session off a calm account: %v", rest)
 	}
 }
@@ -120,5 +120,59 @@ func TestSnapshotNeverCarriesATokenAndHistoryLogsMoves(t *testing.T) {
 	history, _ := os.ReadFile(filepath.Join(dir, "usage-history.ndjson"))
 	if !strings.Contains(string(history), `"account":"a"`) || !strings.Contains(string(history), `"week":40`) {
 		t.Fatalf("history = %s", history)
+	}
+}
+
+func sdkHeaders(via string) http.Header {
+	return http.Header{"User-Agent": []string{"claude-cli/2.1.316 (external, " + via + ")"}}
+}
+
+func TestAgentSDKSessionsLoadTheFiveHourRoomByTheFactor(t *testing.T) {
+	resetPool(t)
+	x, y := poolAuth("x", 50, 30, 48*time.Hour), poolAuth("y", 50, 30, 48*time.Hour)
+	now := time.Now()
+	claudePool.sessions["s1"] = &poolSeat{account: "x", entrypoint: "sdk-cli", seen: now}
+	claudePool.sessions["s2"] = &poolSeat{account: "y", entrypoint: "cli", seen: now}
+	if got := pickQuota(t, x, y); got != "y" {
+		t.Fatalf("picked %s, want y, whose working session drains the five-hour limit slower", got)
+	}
+}
+
+func TestMoveAwayGivesAnAgentSDKSessionAWiderMargin(t *testing.T) {
+	resetPool(t)
+	hot, calm := poolAuth("hot", 76, 30, 48*time.Hour), poolAuth("calm", 10, 30, 48*time.Hour)
+	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, calm}, sdkHeaders("cli")); rest != nil {
+		t.Fatalf("moved an interactive session 14 points from the cutoff: %v", rest)
+	}
+	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}, sdkHeaders("sdk-cli")); len(rest) != 1 || level != "early" {
+		t.Fatalf("kept an Agent SDK session 14 points from the cutoff: rest = %v", rest)
+	}
+}
+
+func TestSeatRecordsTheEntrypoint(t *testing.T) {
+	dir := resetPool(t)
+	headers := sdkHeaders("sdk-ts")
+	headers.Set("X-Claude-Code-Session-Id", "51933568-42b8-4c8e-bc44-2bed00731a66")
+	claudePool.seat(headers, poolAuth("a", 1, 1, time.Hour), "limit")
+	data, _ := os.ReadFile(filepath.Join(dir, "attribution.ndjson"))
+	if !strings.Contains(string(data), `"entrypoint":"sdk-ts"`) {
+		t.Fatalf("attribution = %s", data)
+	}
+}
+
+func TestAnAccountWithoutAFiveHourLimitCountsSessionsAlike(t *testing.T) {
+	resetPool(t)
+	x, y := poolAuth("x", 0, 30, 48*time.Hour), poolAuth("y", 0, 30, 48*time.Hour)
+	for _, a := range []*Auth{x, y} {
+		delete(a.Quota.Signals, "Anthropic-Ratelimit-Unified-5h-Utilization")
+	}
+	now := time.Now()
+	claudePool.sessions["s1"] = &poolSeat{account: "x", entrypoint: "sdk-cli", seen: now}
+	claudePool.sessions["s2"] = &poolSeat{account: "y", entrypoint: "cli", seen: now}
+	claudePool.mu.Lock()
+	rows := claudePool.rankLocked([]*Auth{x, y}, now, 1.7)
+	claudePool.mu.Unlock()
+	if rows[0].Room != rows[1].Room {
+		t.Fatalf("rooms %v and %v, want equal with no five-hour limit", rows[0].Room, rows[1].Room)
 	}
 }

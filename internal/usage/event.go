@@ -29,6 +29,8 @@ type Event struct {
 	ProjectName        string   `json:"projectName,omitempty"`
 	T3ThreadID         string   `json:"t3ThreadId,omitempty"`
 	T3ThreadURL        string   `json:"t3ThreadUrl,omitempty"`
+	// Entrypoint is how the Claude Code process was started: cli, sdk-cli (claude -p), sdk-ts, or a product's own name.
+	Entrypoint string `json:"entrypoint,omitempty"`
 }
 
 // Device is a machine whose events the store holds.

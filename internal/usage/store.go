@@ -126,7 +126,7 @@ func (s *FileStore) replay(log *deviceLog) error {
 // intern shares the strings many records repeat (projects, models, sessions, titles).
 func (s *FileStore) intern(e *Event) {
 	for _, field := range []*string{&e.Harness, &e.Model, &e.RawModel, &e.Project, &e.SessionID, &e.DeviceID,
-		&e.SessionTitle, &e.ProjectName, &e.T3ThreadID, &e.T3ThreadURL} {
+		&e.SessionTitle, &e.ProjectName, &e.T3ThreadID, &e.T3ThreadURL, &e.Entrypoint} {
 		if v, ok := s.strs[*field]; ok {
 			*field = v
 		} else {
@@ -349,6 +349,9 @@ func mergeEvent(incoming Event, previous *Event, deviceID string) Event {
 	if e.ProjectName == "" {
 		e.ProjectName = previous.ProjectName
 	}
+	if e.Entrypoint == "" {
+		e.Entrypoint = previous.Entrypoint
+	}
 	if incoming.T3ThreadID == "" && incoming.T3ThreadURL == "" {
 		e.T3ThreadID, e.T3ThreadURL = previous.T3ThreadID, previous.T3ThreadURL
 		if previous.T3ThreadID != "" && isRemoteRepository(previous.Repository) && !isRemoteRepository(incoming.Repository) &&
@@ -370,7 +373,8 @@ func eventsEqual(a, b *Event) bool {
 		a.ReasoningTokens == b.ReasoningTokens && a.CostUSD == b.CostUSD && floatEq(a.ReportedCostUSD, b.ReportedCostUSD) &&
 		a.CostKnown == b.CostKnown && strEq(a.ServiceTier, b.ServiceTier) && intEq(a.CacheWrite1hTokens, b.CacheWrite1hTokens) &&
 		intEq(a.Requests, b.Requests) && a.DeviceID == b.DeviceID && a.SessionTitle == b.SessionTitle &&
-		a.ProjectName == b.ProjectName && a.T3ThreadID == b.T3ThreadID && a.T3ThreadURL == b.T3ThreadURL
+		a.ProjectName == b.ProjectName && a.T3ThreadID == b.T3ThreadID && a.T3ThreadURL == b.T3ThreadURL &&
+		a.Entrypoint == b.Entrypoint
 }
 
 // Events is every device's records, one per harness and id across devices (the larger

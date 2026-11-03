@@ -18,6 +18,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/entrypoint"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -26,6 +27,8 @@ import (
 // moves a bound session off an account nearing a cutoff, samples each account's limits,
 // held resets and plan from Anthropic, and records which account each Claude Code session
 // runs on. Held resets are only ever read: spending one stays a person's decision.
+// Agent SDK and `claude -p` sessions drain the five-hour limit faster than interactive
+// ones, so they weigh routing.pool.agent-sdk-five-hour-factor sessions each there.
 
 const (
 	poolStaleAfter    = 20 * time.Minute
@@ -81,8 +84,9 @@ type poolAccount struct {
 }
 
 type poolSeat struct {
-	account string
-	seen    time.Time
+	account    string
+	entrypoint string
+	seen       time.Time
 }
 
 type claudePoolState struct {
@@ -222,14 +226,22 @@ type PoolRow struct {
 	five, week    float64
 }
 
-func (p *claudePoolState) workingLocked(account string, now time.Time) int {
-	n := 0
+// workingLocked counts the account's working sessions, and their five-hour load with
+// Agent SDK sessions weighted.
+func (p *claudePoolState) workingLocked(account string, now time.Time) (int, float64) {
+	n, load := 0, 0.0
 	for _, seat := range p.sessions {
 		if seat.account == account && now.Sub(seat.seen) <= poolWorkingWindow {
 			n++
+			load += entrypoint.Weight(seat.entrypoint, p.cfg.AgentSDKFactor())
 		}
 	}
-	return n
+	return n, load
+}
+
+// sessionWeight is the five-hour weight of the session a request belongs to.
+func (p *claudePoolState) sessionWeight(headers http.Header) float64 {
+	return entrypoint.Weight(entrypoint.FromUserAgent(headers.Get("User-Agent")), p.cfg.AgentSDKFactor())
 }
 
 func nextReset(at int64, now time.Time, period time.Duration) int64 {
@@ -247,7 +259,9 @@ func nextReset(at int64, now time.Time, period time.Duration) int64 {
 // among them one holding a reset, then those with their share of five-hour room per working
 // session, then sampled ones; then the account whose remaining week runs out soonest, then
 // the most five-hour room per working session. With nothing open, the most real room wins.
-func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time) []PoolRow {
+// Room is shared by load, the weighted working sessions plus the incoming one's weight; an
+// account whose plan has no five-hour limit, like a verified Ultra one, counts sessions alike.
+func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float64) []PoolRow {
 	cfg := p.cfg
 	rows := make([]PoolRow, 0, len(auths))
 	for _, auth := range auths {
@@ -257,9 +271,15 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time) []PoolRow {
 		id := poolAccountID(auth)
 		a := p.account(id)
 		r := p.readingLocked(auth, now)
+		incoming := weight
 		row := PoolRow{AuthID: auth.ID, Account: id, Email: metaString(auth, "email"), Reading: r, auth: auth,
 			Resets: a.resets, AtLimit: a.atLimit, Plan: a.plan, NeedsReauth: a.needsReauth, Disabled: auth.Disabled,
-			SignInExpires: metaString(auth, "refresh_expired"), Working: p.workingLocked(id, now)}
+			SignInExpires: metaString(auth, "refresh_expired")}
+		var load float64
+		row.Working, load = p.workingLocked(id, now)
+		if r.FiveHour == nil && r.At > 0 {
+			load, incoming = float64(row.Working), 1
+		}
 		if r.FiveHour != nil {
 			row.five = r.FiveHour.Used
 		}
@@ -274,7 +294,7 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time) []PoolRow {
 		}
 		fiveRoom, weekRoom := cfg.SessionCutoff-row.five, cfg.WeeklyCutoff-row.week
 		row.Usable = fiveRoom > 0 && weekRoom > 0 && !a.needsReauth
-		row.Room = fiveRoom / float64(row.Working+1)
+		row.Room = fiveRoom / (load + incoming)
 		var weekReset int64
 		if r.Week != nil {
 			weekReset = nextReset(r.Week.ResetsAt, now, poolWeek)
@@ -333,7 +353,7 @@ func (s *QuotaSelector) Pick(ctx context.Context, provider, model string, opts c
 		return nil, err
 	}
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked(available, time.Now())
+	rows := claudePool.rankLocked(available, time.Now(), claudePool.sessionWeight(opts.Headers))
 	claudePool.mu.Unlock()
 	if len(rows) > 0 {
 		return rows[0].auth, nil
@@ -350,7 +370,7 @@ func poolAfterPick(opts cliproxyexecutor.Options, auths []*Auth, auth *Auth, quo
 	}
 	cause := "limit"
 	if quota {
-		if rest, level := claudePool.moveAway(auth, auths); rest != nil {
+		if rest, level := claudePool.moveAway(auth, auths, opts.Headers); rest != nil {
 			if moved, err := pick(rest); err == nil && moved != nil {
 				log.Infof("pool: moving session off %s, nearing its limits, to %s", metaString(auth, "email"), metaString(moved, "email"))
 				auth, cause = moved, level
@@ -362,12 +382,13 @@ func poolAfterPick(opts cliproxyexecutor.Options, auths []*Auth, auth *Auth, quo
 }
 
 // moveAway returns the other accounts and "over" (past a cutoff) or "early" (nearing one)
-// when the session should leave auth for a clearer account.
-func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth) ([]*Auth, string) {
+// when the session should leave auth for a clearer account. An Agent SDK session nears the
+// five-hour cutoff faster, so its margin before the cutoff is wider by the same factor.
+func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Header) ([]*Auth, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	cfg, now := p.cfg, time.Now()
-	rows := p.rankLocked(auths, now)
+	cfg, now, weight := p.cfg, time.Now(), p.sessionWeight(headers)
+	rows := p.rankLocked(auths, now, weight)
 	calm := func(r PoolRow) bool {
 		return r.Usable && r.Comfortable && r.five < cfg.SessionCutoff-poolMargin && cfg.WeeklyCutoff-r.week >= 5
 	}
@@ -381,7 +402,7 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth) ([]*Auth, string) 
 		return nil, ""
 	}
 	urgent := !mine.Usable
-	soon := mine.five >= cfg.SessionCutoff-poolMargin || cfg.WeeklyCutoff-mine.week < 5
+	soon := mine.five >= cfg.SessionCutoff-poolMargin*weight || cfg.WeeklyCutoff-mine.week < 5
 	if !urgent && !soon {
 		return nil, ""
 	}
@@ -407,24 +428,28 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth) ([]*Auth, string) 
 }
 
 // seat records the account a Claude Code session runs on: "start" for its first binding,
-// "failure" when it changes, with why (limit, early, over).
+// "failure" when it changes, with why (limit, early, over), and the session's entrypoint.
 func (p *claudePoolState) seat(headers http.Header, auth *Auth, cause string) {
 	sessionID := strings.ToLower(strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")))
 	if !sessionIDPattern.MatchString(sessionID) {
 		return
 	}
 	account := poolAccountID(auth)
+	via := entrypoint.FromUserAgent(headers.Get("User-Agent"))
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
 	seat := p.sessions[sessionID]
 	if seat == nil || seat.account != account {
 		row := map[string]any{"at": now.UTC().Format(time.RFC3339Nano), "sessionId": sessionID, "accountId": account, "event": "start"}
+		if via != "" {
+			row["entrypoint"] = via
+		}
 		if seat != nil {
 			row["event"], row["from"], row["cause"] = "failure", seat.account, cause
 		}
 		p.appendLocked("attribution.ndjson", row)
-		seat = &poolSeat{account: account}
+		seat = &poolSeat{account: account, entrypoint: via}
 		p.sessions[sessionID] = seat
 	}
 	seat.seen = now
@@ -760,10 +785,10 @@ func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 			enabled = append(enabled, a)
 		}
 	}
-	rows := claudePool.rankLocked(enabled, time.Now())
+	rows := claudePool.rankLocked(enabled, time.Now(), 1)
 	for _, a := range auths {
 		if a.Disabled && isClaudeAuth(a) {
-			rows = append(rows, claudePool.rankLocked([]*Auth{a}, time.Now())...)
+			rows = append(rows, claudePool.rankLocked([]*Auth{a}, time.Now(), 1)...)
 		}
 	}
 	decision := "No Claude account can take a new session."

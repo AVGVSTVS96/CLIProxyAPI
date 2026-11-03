@@ -104,6 +104,8 @@ type Session struct {
 	Repository *string `json:"repository"`
 	Cwd        string  `json:"cwd"`
 	Title      *string `json:"title"`
+	// Entrypoint is how its Claude Code process was started (cli, sdk-cli, sdk-ts, t3-code...); "" when unknown.
+	Entrypoint string  `json:"entrypoint"`
 	FirstAt    float64 `json:"firstAt"`
 	LastAt     float64 `json:"lastAt"`
 	Amount     Amount  `json:"amount"`
@@ -152,6 +154,8 @@ type SessionUsage struct {
 	Windows     []WindowUsage  `json:"windows"`
 	Previous    Previous       `json:"previous"`
 	Devices     []usage.Device `json:"devices"`
+	// SDKFactor is the five-hour weight Agent SDK requests were charged at.
+	SDKFactor float64 `json:"sdkFactor"`
 }
 
 // prepared is an event with what every view derives from it.
@@ -186,8 +190,9 @@ func deviceOf(event *prepared) string {
 }
 
 type limitInputs struct {
-	readings []LimitReading
-	history  []Binding
+	readings  []LimitReading
+	history   []Binding
+	sdkFactor float64
 }
 
 type sessionRow struct {
@@ -213,7 +218,7 @@ func sessionUsage(events []prepared, r Range, zone *time.Location, now time.Time
 	var charges []*limitCharge
 	if limits != nil {
 		accountOf = accountLookup(limits.history)
-		windows, charges = attributeLimits(limits.readings, accountOf, events)
+		windows, charges = attributeLimits(limits.readings, accountOf, events, limits.sdkFactor)
 	}
 	assignedInRange := map[*limitWindow]float64{}
 	previous := Amount{}
@@ -255,6 +260,9 @@ func sessionUsage(events []prepared, r Range, zone *time.Location, now time.Time
 		if title := strings.TrimSpace(event.SessionTitle); title != "" && millis >= row.titledAt {
 			row.Title = &title
 			row.titledAt = millis
+		}
+		if event.Entrypoint != "" {
+			row.Entrypoint = event.Entrypoint
 		}
 		row.Amount.addEvent(event, planUSD)
 		row.Models.at(event.Model).addEvent(event, planUSD)
@@ -344,5 +352,13 @@ func sessionUsage(events []prepared, r Range, zone *time.Location, now time.Time
 		Windows:     usages,
 		Previous:    Previous{Amount: previous, Sessions: len(previousSessions)},
 		Devices:     devices,
+		SDKFactor:   sdkFactorOf(limits),
 	}
+}
+
+func sdkFactorOf(limits *limitInputs) float64 {
+	if limits == nil || limits.sdkFactor < 1 {
+		return 1
+	}
+	return limits.sdkFactor
 }

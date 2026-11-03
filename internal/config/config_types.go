@@ -505,6 +505,21 @@ type PoolConfig struct {
 	StateDir string `yaml:"state-dir,omitempty" json:"state-dir,omitempty"`
 	// AccountsFile receives the account list as {"accounts":[{id,email,tier,needsReauth}]}. Empty writes nothing.
 	AccountsFile string `yaml:"accounts-file,omitempty" json:"accounts-file,omitempty"`
+	// AgentSDKFiveHourFactor is how many interactive tokens one Agent SDK or `claude -p` token
+	// costs on the five-hour meter. The weekly meter charges both alike. Default 1.7.
+	AgentSDKFiveHourFactor float64 `yaml:"agent-sdk-five-hour-factor,omitempty" json:"agent-sdk-five-hour-factor,omitempty"`
+}
+
+// DefaultAgentSDKFiveHourFactor is the five-hour rate a controlled A/B on one Max account
+// measured for Agent SDK traffic (pingdotgg/t3code#24649): 1.6x to 1.7x.
+const DefaultAgentSDKFiveHourFactor = 1.7
+
+// AgentSDKFactor is AgentSDKFiveHourFactor, or its default when unset.
+func (c PoolConfig) AgentSDKFactor() float64 {
+	if c.AgentSDKFiveHourFactor < 1 {
+		return DefaultAgentSDKFiveHourFactor
+	}
+	return c.AgentSDKFiveHourFactor
 }
 
 // UsageConfig turns on usage: this machine's Claude Code, Codex, Pi, Grok and Muse logs plus

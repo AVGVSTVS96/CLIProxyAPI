@@ -92,3 +92,13 @@ func TestPiForkOwnership(t *testing.T) {
 		t.Fatal("deduplication must not modify cached parsed files")
 	}
 }
+
+func TestClaudeRecordsTheEntrypoint(t *testing.T) {
+	parsed, err := parseClaude(lines(
+		`{"type":"assistant","entrypoint":"sdk-cli","sessionId":"s1","requestId":"r1","timestamp":"2026-01-01T00:00:00.000Z",`+
+			`"message":{"id":"m1","model":"claude-opus-4-5","usage":{"input_tokens":10,"output_tokens":1}}}`,
+	), "/p/s1.jsonl")
+	if err != nil || len(parsed.Events) != 1 || parsed.Events[0].Event.Entrypoint != "sdk-cli" {
+		t.Fatalf("events %+v, err %v", parsed.Events, err)
+	}
+}

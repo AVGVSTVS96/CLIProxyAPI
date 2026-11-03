@@ -55,6 +55,7 @@ type paths struct {
 	stateDir     string
 	accountsFile string
 	plans        []config.UsagePlan
+	sdkFactor    float64
 }
 
 func pathsOf(cfg config.Config) paths {
@@ -65,6 +66,7 @@ func pathsOf(cfg config.Config) paths {
 		stateDir:     expand(cfg.Routing.Pool.StateDir, ""),
 		accountsFile: expand(cfg.Routing.Pool.AccountsFile, ""),
 		plans:        cfg.Usage.Plans,
+		sdkFactor:    cfg.Routing.Pool.AgentSDKFactor(),
 	}
 	zone := cfg.Usage.Timezone
 	if zone == "" {
@@ -230,6 +232,7 @@ func (d *Deck) SetConfig(cfg config.Config) {
 	d.mu.Lock()
 	d.opts.Config = cfg
 	d.paths.plans = pathsOf(cfg).plans
+	d.paths.sdkFactor = cfg.Routing.Pool.AgentSDKFactor()
 	d.plansKey = ""
 	d.mu.Unlock()
 	d.poolChanged()
@@ -491,7 +494,10 @@ func (d *Deck) load(r Range) *SessionUsage {
 	bindings, _ := d.bindings.read()
 	now := time.Now()
 	plans := d.planPricing(events, revision, now)
-	limits := &limitInputs{readings: sortedReadings(readings), history: bindingHistory(bindings)}
+	d.mu.Lock()
+	factor := d.paths.sdkFactor
+	d.mu.Unlock()
+	limits := &limitInputs{readings: sortedReadings(readings), history: bindingHistory(bindings), sdkFactor: factor}
 	return sessionUsage(events, r, d.paths.zone, now, plans, limits, d.opts.Store.Devices())
 }
 

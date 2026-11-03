@@ -24,6 +24,8 @@ type LiveSession struct {
 	Host    string  `json:"host"`
 	Cwd     string  `json:"cwd"`
 	Since   float64 `json:"since"`
+	// Entrypoint is how its Claude Code process was started, from its transcript; "" until it has one.
+	Entrypoint string `json:"entrypoint"`
 }
 
 type running struct {
@@ -193,11 +195,15 @@ func liveMap(found processes, pool *poolState, names *Names, tracked *SessionUsa
 				since = record.FirstAt
 			}
 		}
+		via := ""
+		if record != nil {
+			via = record.Entrypoint
+		}
 		if since == 0 {
 			since = seen
 		}
 		label, _ := labelOf(shown)
-		s := &LiveSession{ID: id, Label: label, Row: rowOf(ranked, key), State: live, Host: host, Cwd: cwd, Since: since}
+		s := &LiveSession{ID: id, Label: label, Row: rowOf(ranked, key), State: live, Host: host, Cwd: cwd, Since: since, Entrypoint: via}
 		if ranked.Kind == "thread" {
 			s.App = ptr(ranked.App)
 		}

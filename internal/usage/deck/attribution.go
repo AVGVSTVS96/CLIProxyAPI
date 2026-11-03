@@ -3,6 +3,8 @@ package deck
 import (
 	"math"
 	"sort"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/entrypoint"
 )
 
 const (
@@ -45,9 +47,10 @@ func kindIndex(kind string) int {
 }
 
 // attributeLimits splits every rise of an account's limit across the requests
-// that caused it, weighted by API cost. Per window, charges plus unassigned
-// points equal the sampled rise exactly.
-func attributeLimits(readings []LimitReading, accountOf func(*prepared) string, events []prepared) ([]*limitWindow, []*limitCharge) {
+// that caused it, weighted by API cost, and for the five-hour limit also by the
+// Agent SDK factor, since that meter charges Agent SDK tokens sdkFactor times
+// more. Per window, charges plus unassigned points equal the sampled rise exactly.
+func attributeLimits(readings []LimitReading, accountOf func(*prepared) string, events []prepared, sdkFactor float64) ([]*limitWindow, []*limitCharge) {
 	// No window reaches further back than a week before the first reading.
 	earliest := math.Inf(1)
 	for _, row := range readings {
@@ -72,9 +75,15 @@ func attributeLimits(readings []LimitReading, accountOf func(*prepared) string, 
 		window.sampled += points
 		list := bound[window.account]
 		low := sort.Search(len(list), func(i int) bool { return events[list[i]].millis > from })
+		cost := func(e *prepared) float64 {
+			if window.kind == fiveHour {
+				return e.CostUSD * entrypoint.Weight(e.Entrypoint, sdkFactor)
+			}
+			return e.CostUSD
+		}
 		end, weight := low, 0.0
 		for ; end < len(list) && events[list[end]].millis <= to; end++ {
-			weight += events[list[end]].CostUSD
+			weight += cost(&events[list[end]])
 		}
 		if weight <= 0 {
 			window.unassigned = append(window.unassigned, rise{at: to, points: points})
@@ -87,7 +96,7 @@ func attributeLimits(readings []LimitReading, accountOf func(*prepared) string, 
 				share = &limitCharge{account: window.account}
 				charges[index] = share
 			}
-			share.points[kind] += points * events[index].CostUSD / weight
+			share.points[kind] += points * cost(&events[index]) / weight
 			share.window[kind] = window
 		}
 	}
