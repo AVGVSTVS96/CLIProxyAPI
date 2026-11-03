@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -20,11 +19,19 @@ import (
 )
 
 // A held weekly reset zeroes an account's week. The pool spends one the moment every Claude
-// account, the holder included, has used its week: before that, the room it gives would only
-// stand in for room other accounts already have, which then goes unused. It waits out a dry
-// spell shorter than poolDrySpell, when a week comes back on its own soon, unless the reset
-// expires within poolLastWeek. In the reset's last poolLastHour it is spent whatever the pool
-// holds, so it is never lost.
+// account has used its week: before that, the room it gives would only stand in for room
+// other accounts already have, which then goes unused. It waits out a dry spell shorter than
+// poolDrySpell, when a week comes back on its own soon, unless the reset expires within
+// poolLastWeek. One reset is spent per dry spell, the one whose account's week ends last. A
+// reset in its last poolLastHour is spent whatever the pool holds.
+//
+// Anthropic lets some resets be used only at the weekly limit. Their holder takes new work
+// past the weekly cutoff, up to that limit, so the reset becomes usable; one whose holder
+// never gets there before it expires is lost.
+//
+// Anthropic's usage endpoint can trail a spend, so for poolSettle after one, a reading that
+// still shows the week as it was is stale. A claim keeps its request id, on disk in
+// poolClaimsFile, until Anthropic settles it, so retrying it can't spend a second reset.
 
 const (
 	poolDrySpell     = 12 * time.Hour
@@ -32,17 +39,27 @@ const (
 	poolLastHour     = time.Hour
 	poolFreshResets  = 2 * time.Minute
 	poolClaimBackoff = 5 * time.Minute
+	poolSettle       = time.Hour
 	poolResetsFile   = "resets-spent.ndjson"
+	poolClaimsFile   = "reset-claims.json"
 )
 
 // poolClaim is a claim Anthropic has not settled, retried under the same request id.
 type poolClaim struct {
-	grant, requestID string
-	retryAt          int64
-	told             bool
+	Grant     string `json:"grant"`
+	RequestID string `json:"requestId"`
+	Sent      bool   `json:"sent"`
+	retryAt   int64
+	told      bool
 }
 
-// poolSpend is the reset the pool would spend now, or why it keeps them.
+// poolSpent is a reset the pool spent, which the usage endpoint may not show yet.
+type poolSpent struct {
+	week            float64
+	weekEnds, until int64
+}
+
+// poolSpend is a held reset the pool would spend now, or why it keeps it.
 type poolSpend struct {
 	row   *PoolRow
 	grant PoolReset
@@ -52,6 +69,24 @@ type poolSpend struct {
 
 func (r PoolReset) live(now time.Time) bool {
 	return r.Left > 0 && !r.Paused && r.Weekly && (r.ExpiresAt == nil || *r.ExpiresAt > now.UnixMilli())
+}
+
+func (r PoolReset) left(now time.Time) time.Duration {
+	if r.ExpiresAt == nil {
+		return math.MaxInt64
+	}
+	return time.Duration(*r.ExpiresAt-now.UnixMilli()) * time.Millisecond
+}
+
+// nextReset is the account's live weekly reset that expires first.
+func (r PoolRow) nextReset(now time.Time) (PoolReset, bool) {
+	var next PoolReset
+	for _, g := range r.Resets {
+		if g.live(now) && (next.ID == "" || g.left(now) < next.left(now)) {
+			next = g
+		}
+	}
+	return next, next.ID != ""
 }
 
 func (r PoolRow) label() string {
@@ -65,77 +100,81 @@ func when(ms int64) string {
 	return time.UnixMilli(ms).In(time.Local).Format("Mon Jan 2 3:04pm")
 }
 
-// planResetLocked decides from ranked rows whether to spend a weekly reset now.
-func (p *claudePoolState) planResetLocked(rows []PoolRow, now time.Time) poolSpend {
-	cutoff := p.cfg.WeeklyCutoff
-	var holders, others []*PoolRow
+// settled is r with a week that still shows the usage from before a spent reset replaced by
+// the week the reset started.
+func (a *poolAccount) settled(r PoolReading, now time.Time) (PoolReading, bool) {
+	if s := a.spent; s != nil && now.UnixMilli() < s.until && r.Week != nil && r.Week.Used >= s.week {
+		r.Week = &PoolWindow{Used: 0, ResetsAt: s.weekEnds}
+		return r, true
+	}
+	return r, false
+}
+
+// planResetsLocked decides from ranked rows, for every account holding a weekly reset,
+// whether to spend it now.
+func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []poolSpend {
+	var holders []poolSpend
+	var busy []string
+	dryUntil := int64(math.MaxInt64)
 	for i := range rows {
 		r := &rows[i]
 		if r.Disabled || r.NeedsReauth {
 			continue
 		}
-		held := false
-		for _, g := range r.Resets {
-			held = held || g.live(now)
-		}
-		if held {
-			holders = append(holders, r)
-		} else {
-			others = append(others, r)
-		}
-	}
-	if len(holders) == 0 {
-		return poolSpend{}
-	}
-	sort.SliceStable(holders, func(i, j int) bool { return holders[i].WeekResetsAt > holders[j].WeekResetsAt })
-	holder := holders[0]
-	var grant PoolReset
-	for _, g := range holder.Resets {
-		if g.live(now) && (grant.ID == "" || g.ExpiresAt != nil && (grant.ExpiresAt == nil || *g.ExpiresAt < *grant.ExpiresAt)) {
-			grant = g
-		}
-	}
-	spend := func(why string) poolSpend {
-		return poolSpend{row: holder, grant: grant, why: why, plan: "Spending it now: " + why + "."}
-	}
-	keep := func(plan string) poolSpend { return poolSpend{row: holder, grant: grant, plan: plan} }
-	left := time.Duration(math.MaxInt64)
-	if grant.ExpiresAt != nil {
-		left = time.Duration(*grant.ExpiresAt-now.UnixMilli()) * time.Millisecond
-	}
-	if left < poolLastHour && holder.week > 0 {
-		return spend(fmt.Sprintf("the reset expires %s", when(*grant.ExpiresAt)))
-	}
-
-	var busy []string
-	if !holder.Known || holder.week < cutoff {
-		busy = append(busy, holder.label())
-	}
-	dryUntil := holder.WeekResetsAt
-	for _, r := range append(others, holders[1:]...) {
-		if !r.Known || r.week < cutoff {
+		if !r.Known || r.week < r.weekCutoff {
 			busy = append(busy, r.label())
 		}
 		dryUntil = min(dryUntil, r.WeekResetsAt)
+		if g, ok := r.nextReset(now); ok {
+			holders = append(holders, poolSpend{row: r, grant: g})
+		}
 	}
-	if len(busy) > 0 {
-		return keep(fmt.Sprintf("Spends itself once %s %s used %s week.", strings.Join(busy, " and "),
-			map[bool]string{true: "has", false: "have"}[len(busy) == 1], map[bool]string{true: "its", false: "their"}[len(busy) == 1]))
+	sort.SliceStable(holders, func(i, j int) bool { return holders[i].row.WeekResetsAt > holders[j].row.WeekResetsAt })
+	spend := func(h *poolSpend, why string) { h.why, h.plan = why, "Spending it now: "+why+"." }
+
+	spent := false
+	for i := range holders {
+		h := &holders[i]
+		if h.grant.left(now) >= poolLastHour || h.row.week <= 0 {
+			continue
+		}
+		expires := when(*h.grant.ExpiresAt)
+		if h.grant.NeedsLimit && h.row.week < 100 {
+			h.plan = fmt.Sprintf("Expires %s and only works at the weekly limit, so %s takes new sessions first to reach it.", expires, h.row.label())
+			continue
+		}
+		spend(h, "the reset expires "+expires)
+		spent = true
 	}
+
 	dry := time.Duration(dryUntil-now.UnixMilli()) * time.Millisecond
-	switch {
-	case dry >= poolDrySpell:
-		return spend(fmt.Sprintf("every account had used its week and none came back before %s", when(dryUntil)))
-	case left < poolLastWeek:
-		return spend(fmt.Sprintf("every account had used its week and the reset expires %s", when(*grant.ExpiresAt)))
-	default:
-		return keep(fmt.Sprintf("Every account has used its week, but one comes back %s, so the reset waits for a longer gap.", when(dryUntil)))
+	for i := range holders {
+		h := &holders[i]
+		left := h.grant.left(now)
+		switch {
+		case h.plan != "":
+		case len(busy) > 0:
+			one := len(busy) == 1
+			h.plan = fmt.Sprintf("Spends itself once %s %s used %s week.", strings.Join(busy, " and "),
+				map[bool]string{true: "has", false: "have"}[one], map[bool]string{true: "its", false: "their"}[one])
+		case spent:
+			h.plan = "Every account has used its week, but another reset is being spent, so this one waits for the next time they all have."
+		case dry >= poolDrySpell:
+			spend(h, fmt.Sprintf("every account had used its week and none came back before %s", when(dryUntil)))
+			spent = true
+		case left < poolLastWeek:
+			spend(h, fmt.Sprintf("every account had used its week and the reset expires %s", when(*h.grant.ExpiresAt)))
+			spent = true
+		default:
+			h.plan = fmt.Sprintf("Every account has used its week, but one comes back %s, so the reset waits for a longer gap.", when(dryUntil))
+		}
 	}
+	return holders
 }
 
-// spendReset spends a held weekly reset when planResetLocked says so, after rereading the
-// holder's grants to make sure Anthropic still offers it.
-func (p *claudePoolState) spendReset(ctx context.Context, auths []*Auth, now time.Time) {
+// spendReset spends every held weekly reset planResetsLocked says to, and lifts the
+// manager's cooldown on an account whose reset it spent.
+func (p *claudePoolState) spendReset(ctx context.Context, m *Manager, auths []*Auth, now time.Time) {
 	enabled := make([]*Auth, 0, len(auths))
 	for _, a := range auths {
 		if isClaudeAuth(a) && !a.Disabled {
@@ -147,40 +186,69 @@ func (p *claudePoolState) spendReset(ctx context.Context, auths []*Auth, now tim
 		p.mu.Unlock()
 		return
 	}
-	plan := p.planResetLocked(p.rankLocked(enabled, now, 1), now)
-	if plan.why == "" {
-		p.mu.Unlock()
-		return
-	}
-	auth, account := plan.row.auth, plan.row.Account
-	a := p.account(account)
-	fresh := now.UnixMilli()-a.resetsAt <= poolFreshResets.Milliseconds()
-	if a.claim != nil && a.claim.retryAt > now.UnixMilli() {
-		p.mu.Unlock()
-		return
-	}
+	p.loadClaimsLocked()
+	plans := p.planResetsLocked(p.rankLocked(enabled, now, 1), now)
 	p.mu.Unlock()
+	for _, plan := range plans {
+		if plan.why != "" && p.spendOne(ctx, enabled, plan, now) && m != nil {
+			if _, _, err := m.ResetQuota(ctx, plan.row.AuthID); err != nil {
+				log.Warnf("pool: lifting %s's cooldown after its reset: %v", plan.row.label(), err)
+			}
+		}
+	}
+}
 
+// replanLocked is the plan for one account's reset.
+func (p *claudePoolState) replanLocked(auths []*Auth, account string, now time.Time) poolSpend {
+	for _, plan := range p.planResetsLocked(p.rankLocked(auths, now, 1), now) {
+		if plan.row.Account == account {
+			return plan
+		}
+	}
+	return poolSpend{}
+}
+
+// spendOne claims plan's reset after rereading the account's grants to make sure Anthropic
+// still offers it, and reports whether it was spent.
+func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan poolSpend, now time.Time) bool {
+	auth, account := plan.row.auth, plan.row.Account
 	token, org := metaString(auth, "access_token"), metaString(auth, "organization_uuid")
 	if token == "" || org == "" {
-		return
+		return false
+	}
+	p.mu.Lock()
+	a := p.account(account)
+	backingOff := a.retryAt > now.UnixMilli() || a.claim != nil && a.claim.retryAt > now.UnixMilli()
+	fresh := now.UnixMilli()-a.resetsAt <= poolFreshResets.Milliseconds()
+	p.mu.Unlock()
+	if backingOff {
+		return false
 	}
 	if !fresh {
 		p.readUsage(ctx, account, token, now)
 		p.mu.Lock()
-		plan = p.planResetLocked(p.rankLocked(enabled, now, 1), now)
+		read := now.UnixMilli()-a.resetsAt <= poolFreshResets.Milliseconds()
+		plan = p.replanLocked(auths, account, now)
 		p.mu.Unlock()
-		if plan.why == "" || plan.row.Account != account {
-			return
+		if !read || plan.why == "" {
+			return false
 		}
 	}
+
 	p.mu.Lock()
-	if a.claim == nil || a.claim.grant != plan.grant.ID {
-		a.claim = &poolClaim{grant: plan.grant.ID, requestID: uuid.NewString()}
+	if c := a.claim; c != nil && c.Sent && c.Grant != plan.grant.ID {
+		for _, g := range a.resets {
+			if g.ID == c.Grant && g.live(now) {
+				plan.grant = g
+			}
+		}
+	}
+	if a.claim == nil || a.claim.Grant != plan.grant.ID {
+		a.claim = &poolClaim{Grant: plan.grant.ID, RequestID: uuid.NewString()}
+		p.saveClaimsLocked()
 	}
 	claim := a.claim
 	command := p.cfg.ResetCommand
-	p.mu.Unlock()
 	tell := func(line string) {
 		log.Info("pool: " + line)
 		if command != "" {
@@ -188,51 +256,104 @@ func (p *claudePoolState) spendReset(ctx context.Context, auths []*Auth, now tim
 		}
 	}
 	if !plan.grant.UsableNow {
-		p.mu.Lock()
 		told := claim.told
 		claim.retryAt, claim.told = now.Add(poolClaimBackoff).UnixMilli(), true
 		p.mu.Unlock()
 		if !told {
 			tell(fmt.Sprintf("Wanted to spend %s's weekly reset (%s), but Anthropic says it can't be used right now. Retrying every few minutes.", plan.row.label(), plan.why))
 		}
-		return
+		return false
 	}
+	resent := claim.Sent
+	claim.Sent = true
+	p.saveClaimsLocked()
+	p.mu.Unlock()
 
-	out, status := p.claimReset(ctx, token, org, plan.grant.ID, claim.requestID)
+	out, status := p.claimReset(ctx, token, org, plan.grant.ID, claim.RequestID)
+	spent := out.Result == "reset" || out.Result == "already_used" && resent
 	settled := out.Result != "unavailable" && out.Result != "" && status != http.StatusTooManyRequests && status < 500
 	p.mu.Lock()
 	p.appendLocked(poolResetsFile, map[string]any{"at": now.UTC().Format(time.RFC3339Nano), "account": account, "email": plan.row.Email,
-		"grant": plan.grant.ID, "kind": plan.grant.Kind, "status": status, "result": out.Result, "reason": out.Reason,
-		"resetsLeft": out.ResetsLeft, "cleared": out.Cleared, "weeklyResetsAt": out.WeeklyResetsAt, "why": plan.why})
+		"grant": plan.grant.ID, "kind": plan.grant.Kind, "requestId": claim.RequestID, "status": status, "result": out.Result, "reason": out.Reason,
+		"spent": spent, "resetsLeft": out.ResetsLeft, "cleared": out.Cleared, "weeklyResetsAt": out.WeeklyResetsAt, "why": plan.why})
 	retry := now.Add(poolClaimBackoff)
 	if at := isoMillis(out.CooldownUntil); at != nil && *at > retry.UnixMilli() {
 		retry = time.UnixMilli(*at)
 	}
 	told, weekEnds := claim.told, plan.row.WeekResetsAt
 	switch {
-	case out.Result == "reset":
+	case spent:
 		if at := isoMillis(out.WeeklyResetsAt); at != nil {
 			weekEnds = *at
 		}
 		a.reading = PoolReading{FiveHour: plan.row.Reading.FiveHour, Week: &PoolWindow{Used: 0, ResetsAt: weekEnds}, At: now.UnixMilli()}
-		a.resets = slices.DeleteFunc(slices.Clone(a.resets), func(r PoolReset) bool { return r.ID == plan.grant.ID })
-		a.resetsAt, a.claim = 0, nil
+		a.spent = &poolSpent{week: plan.row.week, weekEnds: weekEnds, until: now.Add(poolSettle).UnixMilli()}
+		resets := make([]PoolReset, 0, len(a.resets))
+		for _, g := range a.resets {
+			if g.ID == plan.grant.ID {
+				g.Left--
+				if out.ResetsLeft != nil {
+					g.Left = *out.ResetsLeft
+				}
+			}
+			if g.Left > 0 {
+				resets = append(resets, g)
+			}
+		}
+		a.resets, a.resetsAt, a.claim = resets, 0, nil
 	case settled:
 		a.resetsAt = 0
-		a.claim = &poolClaim{grant: plan.grant.ID, requestID: uuid.NewString(), retryAt: retry.UnixMilli(), told: true}
+		a.claim = &poolClaim{Grant: plan.grant.ID, RequestID: uuid.NewString(), retryAt: retry.UnixMilli(), told: true}
 	default:
 		claim.retryAt, claim.told = retry.UnixMilli(), true
 	}
+	p.saveClaimsLocked()
 	p.mu.Unlock()
 
 	switch {
-	case out.Result == "reset":
+	case spent:
 		tell(fmt.Sprintf("Spent %s's weekly reset: %s. Its week is back to 0%%; next weekly reset %s.", plan.row.label(), plan.why, when(weekEnds)))
 	case !told:
 		tell(fmt.Sprintf("Tried to spend %s's weekly reset (%s); Anthropic answered %q (%s, HTTP %d). Retrying every few minutes.", plan.row.label(), plan.why, out.Result, out.Reason, status))
 	default:
-		log.Warnf("pool: reset claim for %s answered %q (%s), status %d", plan.row.Email, out.Result, out.Reason, status)
+		log.Warnf("pool: reset claim for %s answered %q (%s), status %d", plan.row.label(), out.Result, out.Reason, status)
 	}
+	return spent
+}
+
+// loadClaimsLocked reads the claims a previous run sent and Anthropic hadn't settled.
+func (p *claudePoolState) loadClaimsLocked() {
+	if p.claimsRead || p.cfg.StateDir == "" {
+		return
+	}
+	p.claimsRead = true
+	data, err := os.ReadFile(filepath.Join(p.cfg.StateDir, poolClaimsFile))
+	if err != nil {
+		return
+	}
+	claims := map[string]*poolClaim{}
+	if err := json.Unmarshal(data, &claims); err != nil {
+		log.Warnf("pool: unreadable %s: %v", poolClaimsFile, err)
+		return
+	}
+	for account, c := range claims {
+		if c != nil && c.Grant != "" && c.RequestID != "" {
+			p.account(account).claim = c
+		}
+	}
+}
+
+func (p *claudePoolState) saveClaimsLocked() {
+	if p.cfg.StateDir == "" {
+		return
+	}
+	claims := map[string]*poolClaim{}
+	for account, a := range p.accounts {
+		if a.claim != nil && a.claim.Sent {
+			claims[account] = a.claim
+		}
+	}
+	writeJSONFile(filepath.Join(p.cfg.StateDir, poolClaimsFile), claims)
 }
 
 type resetAnswer struct {
@@ -287,8 +408,9 @@ func (p *claudePoolState) spentLocked() map[string][]int64 {
 			At      time.Time `json:"at"`
 			Account string    `json:"account"`
 			Result  string    `json:"result"`
+			Spent   bool      `json:"spent"`
 		}
-		if json.Unmarshal([]byte(line), &row) == nil && row.Result == "reset" {
+		if json.Unmarshal([]byte(line), &row) == nil && (row.Result == "reset" || row.Spent) {
 			out[row.Account] = append(out[row.Account], row.At.UnixMilli())
 		}
 	}

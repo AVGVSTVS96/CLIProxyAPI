@@ -64,7 +64,9 @@ type PoolReset struct {
 	ExpiresAt *int64 `json:"expiresAt"`
 	Paused    bool   `json:"paused"`
 	UsableNow bool   `json:"usableNow"`
-	Weekly    bool   `json:"weekly"`
+	// NeedsLimit is set when Anthropic lets the reset be used only at a limit it refills.
+	NeedsLimit bool `json:"needsLimit"`
+	Weekly     bool `json:"weekly"`
 }
 
 // PoolPlan is the account's subscription, from its profile.
@@ -85,6 +87,7 @@ type poolAccount struct {
 	retryAt     int64
 	needsReauth bool
 	claim       *poolClaim
+	spent       *poolSpent
 }
 
 type poolSeat struct {
@@ -94,12 +97,13 @@ type poolSeat struct {
 }
 
 type claudePoolState struct {
-	mu       sync.Mutex
-	cfg      config.PoolConfig
-	accounts map[string]*poolAccount
-	sessions map[string]*poolSeat
-	listed   string
-	client   *http.Client
+	mu         sync.Mutex
+	cfg        config.PoolConfig
+	accounts   map[string]*poolAccount
+	sessions   map[string]*poolSeat
+	listed     string
+	client     *http.Client
+	claimsRead bool
 }
 
 var claudePool = &claudePoolState{
@@ -190,10 +194,12 @@ func headerReading(auth *Auth) PoolReading {
 // readingLocked is the freshest of the sampled and header readings, with windows that have
 // since reset counted as empty.
 func (p *claudePoolState) readingLocked(auth *Auth, now time.Time) PoolReading {
-	r := p.account(poolAccountID(auth)).reading
+	a := p.account(poolAccountID(auth))
+	r := a.reading
 	if h := headerReading(auth); h.At > r.At {
 		r = h
 	}
+	r, _ = a.settled(r, now)
 	live := func(w *PoolWindow) *PoolWindow {
 		if w != nil && w.ResetsAt > 0 && w.ResetsAt <= now.UnixMilli() {
 			return &PoolWindow{Used: 0}
@@ -230,6 +236,7 @@ type PoolRow struct {
 	ResetsSpent   []int64     `json:"resetsSpent,omitempty"`
 	auth          *Auth
 	five, week    float64
+	weekCutoff    float64
 }
 
 // workingLocked counts the account's working sessions, and their five-hour load with
@@ -298,7 +305,13 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 				row.HoldsReset = true
 			}
 		}
-		fiveRoom, weekRoom := cfg.SessionCutoff-row.five, cfg.WeeklyCutoff-row.week
+		row.weekCutoff = cfg.WeeklyCutoff
+		for _, reset := range a.resets {
+			if reset.NeedsLimit && reset.live(now) {
+				row.weekCutoff = 100
+			}
+		}
+		fiveRoom, weekRoom := cfg.SessionCutoff-row.five, row.weekCutoff-row.week
 		row.Usable = fiveRoom > 0 && weekRoom > 0 && !a.needsReauth
 		row.Room = fiveRoom / (load + incoming)
 		var weekReset int64
@@ -396,7 +409,7 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Heade
 	cfg, now, weight := p.cfg, time.Now(), p.sessionWeight(headers)
 	rows := p.rankLocked(auths, now, weight)
 	calm := func(r PoolRow) bool {
-		return r.Usable && r.Comfortable && r.five < cfg.SessionCutoff-poolMargin && cfg.WeeklyCutoff-r.week >= 5
+		return r.Usable && r.Comfortable && r.five < cfg.SessionCutoff-poolMargin && r.weekCutoff-r.week >= 5
 	}
 	var mine *PoolRow
 	for i := range rows {
@@ -408,7 +421,7 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Heade
 		return nil, ""
 	}
 	urgent := !mine.Usable
-	soon := mine.five >= cfg.SessionCutoff-poolMargin*weight || cfg.WeeklyCutoff-mine.week < 5
+	soon := mine.five >= cfg.SessionCutoff-poolMargin*weight || mine.weekCutoff-mine.week < 5
 	if !urgent && !soon {
 		return nil, ""
 	}
@@ -526,7 +539,7 @@ func StartPoolSampler(ctx context.Context, m *Manager) {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
-			claudePool.sample(ctx, m.List())
+			claudePool.sample(ctx, m, m.List())
 			select {
 			case <-ctx.Done():
 				return
@@ -536,7 +549,7 @@ func StartPoolSampler(ctx context.Context, m *Manager) {
 	}()
 }
 
-func (p *claudePoolState) sample(ctx context.Context, auths []*Auth) {
+func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth) {
 	now := time.Now()
 	type job struct {
 		auth                *Auth
@@ -553,7 +566,7 @@ func (p *claudePoolState) sample(ctx context.Context, auths []*Auth) {
 		id := poolAccountID(auth)
 		a := p.account(id)
 		if h := headerReading(auth); h.At > a.reading.At {
-			a.reading = h
+			a.reading, _ = a.settled(h, now)
 		}
 		p.logReadingLocked(id, a.reading)
 		if a.retryAt > now.UnixMilli() {
@@ -594,7 +607,7 @@ func (p *claudePoolState) sample(ctx context.Context, auths []*Auth) {
 			p.readUsage(ctx, j.account, token, now)
 		}
 	}
-	p.spendReset(ctx, auths, now)
+	p.spendReset(ctx, m, auths, now)
 	p.writeAccounts(auths)
 }
 
@@ -620,13 +633,16 @@ func (p *claudePoolState) readUsage(ctx context.Context, account, token string, 
 	case status == http.StatusTooManyRequests:
 		a.retryAt = now.Add(retry).UnixMilli()
 	case status == http.StatusOK:
-		a.reading = PoolReading{FiveHour: body.FiveHour.window(), Week: body.SevenDay.window(), At: now.UnixMilli()}
+		var stale bool
+		a.reading, stale = a.settled(PoolReading{FiveHour: body.FiveHour.window(), Week: body.SevenDay.window(), At: now.UnixMilli()}, now)
 		p.logReadingLocked(account, a.reading)
-		a.resets = []PoolReset{}
-		if body.Cedar != nil {
-			for _, g := range body.Cedar.Grants {
-				if left, _ := g["resets_left"].(float64); left > 0 {
-					a.resets = append(a.resets, grantReset(g, int(left)))
+		if !stale {
+			a.resets = []PoolReset{}
+			if body.Cedar != nil {
+				for _, g := range body.Cedar.Grants {
+					if left, _ := g["resets_left"].(float64); left > 0 {
+						a.resets = append(a.resets, grantReset(g, int(left)))
+					}
 				}
 			}
 		}
@@ -648,12 +664,13 @@ func grantReset(g map[string]any, left int) PoolReset {
 	ends, _ := g["ends_at"].(string)
 	paused, _ := g["paused"].(bool)
 	usable, _ := g["usable_now"].(bool)
+	needsLimit, given := g["use_requires_limit"].(bool)
 	clears, _ := g["clears"].([]any)
 	weekly := false
 	for _, c := range clears {
 		weekly = weekly || c == "seven_day"
 	}
-	return PoolReset{ID: id, Kind: resetKind(g), Left: left, ExpiresAt: isoMillis(&ends), Paused: paused, UsableNow: usable, Weekly: weekly}
+	return PoolReset{ID: id, Kind: resetKind(g), Left: left, ExpiresAt: isoMillis(&ends), Paused: paused, UsableNow: usable, NeedsLimit: needsLimit || !given, Weekly: weekly}
 }
 
 type usageWindow struct {
@@ -809,12 +826,8 @@ func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 	}
 	now := time.Now()
 	rows := claudePool.rankLocked(enabled, now, 1)
-	if plan := claudePool.planResetLocked(rows, now); plan.row != nil {
-		for i := range rows {
-			if rows[i].Account == plan.row.Account {
-				rows[i].ResetPlan = plan.plan
-			}
-		}
+	for _, plan := range claudePool.planResetsLocked(rows, now) {
+		plan.row.ResetPlan = plan.plan
 	}
 	for _, a := range auths {
 		if a.Disabled && isClaudeAuth(a) {

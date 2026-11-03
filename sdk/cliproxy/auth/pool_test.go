@@ -109,7 +109,7 @@ func TestSnapshotNeverCarriesATokenAndHistoryLogsMoves(t *testing.T) {
 	if _, err := m.Register(context.Background(), a); err != nil {
 		t.Fatal(err)
 	}
-	claudePool.sample(context.Background(), m.List())
+	claudePool.sample(context.Background(), m, m.List())
 	snap := m.PoolSnapshot(nil)
 	if len(snap.Accounts) != 1 || snap.Accounts[0].Reading.Week == nil || snap.Accounts[0].Reading.Week.Used != 40 {
 		t.Fatalf("snapshot = %+v", snap)
