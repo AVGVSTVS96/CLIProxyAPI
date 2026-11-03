@@ -352,7 +352,12 @@ func TestDraftsAndPlugins(t *testing.T) {
 	write(t, filepath.Join(hex, ".hex", "channels", "telegram", ".claude-plugin", "plugin.json"), `{"version":"0.2.0","description":"Telegram channel"}`)
 	write(t, filepath.Join(hex, "state", "telegram", "hub.sock"), "")
 	write(t, filepath.Join(hex, ".hex", "mods", "panel", "README.md"), "# panel\n\nA side panel.\n")
-	write(t, filepath.Join(claude, "settings.json"), `{"enabledPlugins":{"tool@market":true}}`)
+	write(t, filepath.Join(claude, "settings.json"), `{"enabledPlugins":{"tool@market":true},
+		"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"guard.sh"}]}]}}`)
+	write(t, filepath.Join(hex, ".mcp.json"), `{"mcpServers":{"t3":{"type":"http","url":"http://t3/mcp"},"off":{"command":"off-server"}}}`)
+	write(t, filepath.Join(hex, ".claude", "settings.json"), `{"enabledMcpjsonServers":["t3","off"],"deniedMcpServers":[{"serverName":"off"}]}`)
+	write(t, filepath.Join(claude, "skills", "x", "SKILL.md"), "---\nname: x\ndescription: >\n  Read X\n  as he sees it.\n---\n# x\n")
+	write(t, filepath.Join(claude, "skills", "notes", "README.md"), "no skill here")
 	write(t, filepath.Join(claude, "plugins", "cache", "tool", ".claude-plugin", "plugin.json"), `{"description":"A tool"}`)
 	write(t, filepath.Join(claude, "plugins", "installed_plugins.json"), `{"version":2,"plugins":{
 		"telegram@hex":[{"scope":"user","version":"0.1.0","installPath":"/nowhere"}],
@@ -378,10 +383,21 @@ func TestDraftsAndPlugins(t *testing.T) {
 	}
 
 	plugins := w.Plugins()
-	if len(plugins) != 4 {
+	if len(plugins) != 8 {
 		t.Fatalf("plugins = %+v", plugins)
 	}
 	channel, mod, off, tool := plugins[0], plugins[1], plugins[2], plugins[3]
+	mcpOff, t3, skill, hook := plugins[4], plugins[5], plugins[6], plugins[7]
+	if t3.ID != "mcp:hex:t3" || t3.Kind != "mcp" || !*t3.Enabled || t3.Description != "http://t3/mcp" || *t3.State != "http" ||
+		mcpOff.Name != "off" || *mcpOff.Enabled || *mcpOff.State != "stdio" || mcpOff.Description != "off-server" {
+		t.Fatalf("mcp servers = %+v %+v", t3, mcpOff)
+	}
+	if skill.Kind != "skill" || skill.Name != "x" || skill.Description != "Read X as he sees it." || *skill.Scope != "user" {
+		t.Fatalf("skill = %+v", skill)
+	}
+	if hook.Kind != "hook" || hook.Name != "PreToolUse" || hook.Description != "guard.sh" || *hook.Scope != "user" {
+		t.Fatalf("hook = %+v", hook)
+	}
 	if channel.Kind != "channel" || *channel.Version != "0.2.0" || channel.Description != "Telegram channel" || *channel.State != "connected" ||
 		*channel.Source != (Target{Repo: "core", Path: "channels/telegram"}) || channel.Enabled != nil {
 		t.Fatalf("channel = %+v", channel)

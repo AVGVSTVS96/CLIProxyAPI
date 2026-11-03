@@ -54,7 +54,8 @@ func (w *Service) DraftContents(name string) (string, error) {
 	return string(data), err
 }
 
-// Plugin is a hex channel, a hex mod or a Claude Code plugin.
+// Plugin is something every hex session loads: a hex channel or mod, a Claude Code plugin, an MCP
+// server, a skill or a hook.
 type Plugin struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
@@ -106,7 +107,7 @@ func (s settings) sourceOf(path string) *Target {
 	return &Target{Repo: best.ID, Path: filepath.ToSlash(rel)}
 }
 
-// Plugins lists hex's channels, hex's mods, then the other Claude Code plugins.
+// Plugins lists hex's channels, hex's mods, the other Claude Code plugins, then MCP servers, skills and hooks.
 func (w *Service) Plugins() []Plugin {
 	s := w.current()
 	var installed struct {
@@ -181,7 +182,8 @@ func (w *Service) Plugins() []Plugin {
 		list = append(list, Plugin{ID: "mod:" + entry.Name(), Name: entry.Name(), Kind: "mod", Version: text(version),
 			Description: description, Source: s.sourceOf(dir)})
 	}
-	return append(list, claude...)
+	list = append(list, claude...)
+	return append(list, s.setup()...)
 }
 
 // describeMod reads a mod's version and description from its plugin manifest or package.json, or its README's first line.
