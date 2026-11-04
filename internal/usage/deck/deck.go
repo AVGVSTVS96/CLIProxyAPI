@@ -154,6 +154,7 @@ type Deck struct {
 	plansAt   time.Time
 	ranges    map[Range]*rangeCache
 	views     map[string]*UsageView
+	credits   creditsCache
 	labels    string
 }
 
@@ -174,6 +175,7 @@ func New(opts Options) *Deck {
 	d.refreshPool()
 	d.publish()
 	go d.warm(Week)
+	go d.refreshCredits()
 
 	usageChanged := burst(ctx, 2*time.Second, d.usageChanged)
 	cancelStore := opts.Store.Subscribe(usageChanged)
@@ -196,7 +198,7 @@ func New(opts Options) *Deck {
 	if d.paths.stateDir != "" {
 		go d.watch(d.poolChanged, watchSpec{dir: d.paths.stateDir, depth: 1, match: func(rel string) bool {
 			if rel == "credits.json" {
-				d.stream.stale("credits")
+				go d.refreshCredits()
 			}
 			if rel == "usage-history.ndjson" || rel == "attribution.ndjson" {
 				logsChanged()
@@ -446,11 +448,13 @@ func (d *Deck) resetViews() {
 	d.mu.Lock()
 	d.views = map[string]*UsageView{}
 	d.mu.Unlock()
-	d.stream.stale("usage", "credits")
+	d.stream.stale("usage")
+	go d.refreshCredits()
 }
 
 // usageChanged reloads the ranges in view after the store, limits or plans change.
 func (d *Deck) usageChanged() {
+	go d.refreshCredits()
 	d.mu.Lock()
 	var due []Range
 	for _, r := range Ranges {
@@ -537,7 +541,7 @@ func (d *Deck) warm(r Range) {
 		if r == Week || r == Today {
 			d.publish()
 		}
-		d.stream.stale("usage", "credits")
+		d.stream.stale("usage")
 	}
 }
 
@@ -732,7 +736,7 @@ func (d *Deck) Register(group *gin.RouterGroup) {
 		reply(c, d.SessionUsage(pick(c.Query("range"), Ranges, Week)), nil)
 	})
 	group.GET("/credits", func(c *gin.Context) {
-		view, err := d.Credits()
+		view, err := d.cachedCredits()
 		reply(c, view, err)
 	})
 	group.GET("/accounts", func(c *gin.Context) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -82,4 +83,54 @@ func (d *Deck) Credits() (CreditsView, error) {
 		view.API = append(view.API, item)
 	}
 	return view, nil
+}
+
+// creditsCache holds the last view, so a request never waits on a pass over every event.
+type creditsCache struct {
+	mu      sync.Mutex
+	view    *CreditsView
+	err     error
+	hash    string
+	loading bool
+	again   bool
+}
+
+func (d *Deck) cachedCredits() (CreditsView, error) {
+	d.credits.mu.Lock()
+	view, err := d.credits.view, d.credits.err
+	d.credits.mu.Unlock()
+	if view == nil {
+		return d.Credits()
+	}
+	return *view, err
+}
+
+// refreshCredits recomputes the view, one pass at a time, and tells listeners when it changed.
+// A change during a pass runs one more.
+func (d *Deck) refreshCredits() {
+	c := &d.credits
+	c.mu.Lock()
+	if c.loading {
+		c.again = true
+		c.mu.Unlock()
+		return
+	}
+	c.loading = true
+	for {
+		c.again = false
+		c.mu.Unlock()
+		view, err := d.Credits()
+		hash := fmt.Sprint(string(encode(view)), err)
+		c.mu.Lock()
+		changed := hash != c.hash
+		c.view, c.err, c.hash = &view, err, hash
+		if changed {
+			d.stream.stale("credits")
+		}
+		if !c.again {
+			break
+		}
+	}
+	c.loading = false
+	c.mu.Unlock()
 }
