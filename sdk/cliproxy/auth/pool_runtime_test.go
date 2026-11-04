@@ -6,29 +6,18 @@ import (
 	"time"
 )
 
-func TestClaudeRuntimeUsesCreditUntilAPlanHasRoom(t *testing.T) {
+func TestClaudeRuntimeUsesCreditBeforeAnyPlan(t *testing.T) {
 	resetPool(t)
 	m := NewManager(nil, &QuotaSelector{}, nil)
 	key := &Auth{ID: "credit", Provider: "claude", Prefix: "credit", Attributes: map[string]string{"api_key": "test-key"}}
-	if _, err := m.Register(context.Background(), key); err != nil {
-		t.Fatal(err)
+	plan := poolAuth("plan", 0, 0, 7*24*time.Hour)
+	for _, a := range []*Auth{key, plan} {
+		if _, err := m.Register(context.Background(), a); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if runtime, _ := m.ClaudeRuntime("credit"); runtime != "sdk" {
-		t.Fatalf("runtime = %s", runtime)
-	}
-	plan := poolAuth("plan", 0, 99, 24*time.Hour)
-	if _, err := m.Register(context.Background(), plan); err != nil {
-		t.Fatal(err)
-	}
-	if runtime, _ := m.ClaudeRuntime("credit"); runtime != "sdk" {
-		t.Fatalf("exhausted plan selected: %s", runtime)
-	}
-	plan = poolAuth("plan", 0, 0, 7*24*time.Hour)
-	if _, err := m.Update(context.Background(), plan); err != nil {
-		t.Fatal(err)
-	}
-	if runtime, _ := m.ClaudeRuntime("credit"); runtime != "interactive" {
-		t.Fatalf("reset plan should require interactive, got %s", runtime)
+		t.Fatalf("a plan with room was chosen over a credit with balance: %s", runtime)
 	}
 }
 

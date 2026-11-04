@@ -2,14 +2,10 @@ package auth
 
 import "strings"
 
-// ClaudeRuntime keeps the temporary API-credit bridge's routing decision in the pool.
-// An SDK client must switch to interactive Claude Code before using a subscription.
+// ClaudeRuntime keeps the API-credit bridge's routing decision in the pool: any credit with
+// balance runs as an SDK client, and only when every credit is empty does it switch to
+// interactive Claude Code on a subscription.
 func (m *Manager) ClaudeRuntime(prefix string) (runtime, reason string) {
-	for _, row := range m.PoolSnapshot(nil).Accounts {
-		if row.Known && row.Usable && row.Comfortable {
-			return "interactive", "subscription headroom is available"
-		}
-	}
 	if prefix == "" {
 		return "interactive", "no API credential prefix was selected"
 	}
@@ -22,5 +18,5 @@ func (m *Manager) ClaudeRuntime(prefix string) (runtime, reason string) {
 		}
 		return "sdk", "API credit credential is available"
 	}
-	return "interactive", "API credit credential is unavailable"
+	return "interactive", "every API credit is empty"
 }
