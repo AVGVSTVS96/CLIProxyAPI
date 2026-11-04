@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// APICredit is a recorded grant, never an inferred Anthropic billing balance.
+// APICredit is a grant and its last balance read off Console, which no API key can query.
 // Operators keep these non-secret observations in the pool state directory.
 type APICredit struct {
 	StartsAt     int64   `json:"startsAt"`
@@ -23,8 +23,11 @@ type APICredit struct {
 	RenewsAt     int64   `json:"renewsAt"`
 }
 
+// CreditUsage carries the grant forward from its Console reading: Remaining is that
+// reading less what the proxy priced on the credential since.
 type CreditUsage struct {
 	APICredit
+	Recorded      float64 `json:"recorded"`
 	ProxyUSD      float64 `json:"proxyUsd"`
 	Requests      int     `json:"requests"`
 	Unpriced      int     `json:"unpriced"`
@@ -36,7 +39,7 @@ type CreditsView struct {
 }
 
 // Credits reads observations on demand and counts only matching proxy receipts
-// during the grant. Logged API value does not prove the balance debited.
+// during the grant; failed requests are not billed.
 func (d *Deck) Credits() (CreditsView, error) {
 	view := CreditsView{API: []CreditUsage{}}
 	data, err := os.ReadFile(d.stateFile("credits.json"))
@@ -55,7 +58,7 @@ func (d *Deck) Credits() (CreditsView, error) {
 		if g.Account == "" || g.Organization == "" || g.CredentialID == "" || g.StartsAt <= 0 || g.StartsAt > g.ObservedAt || g.ObservedAt <= 0 || g.ObservedAt > now || g.ExpiresAt <= g.ObservedAt || g.Remaining < 0 || g.Allowance <= 0 || g.Remaining > g.Allowance || g.MonthlyCap < 0 {
 			return view, fmt.Errorf("Credit observations are invalid.")
 		}
-		item := CreditUsage{APICredit: g}
+		item := CreditUsage{APICredit: g, Recorded: g.Remaining}
 		for _, e := range d.opts.Store.Events() {
 			at := parseMillis(e.Timestamp)
 			if e.Source != "proxy" || e.AccountID != g.CredentialID || math.IsNaN(at) || at < float64(g.StartsAt) || at >= float64(g.ExpiresAt) || at > float64(now) {
@@ -64,13 +67,17 @@ func (d *Deck) Credits() (CreditsView, error) {
 			item.Requests++
 			if e.CostKnown {
 				item.ProxyUSD += e.CostUSD
-			} else {
+				if at >= float64(g.ObservedAt) {
+					item.Remaining -= e.CostUSD
+				}
+			} else if !e.Failed {
 				item.Unpriced++
 			}
 			if item.LastRequestAt == nil || int64(at) > *item.LastRequestAt {
 				item.LastRequestAt = ptr(int64(at))
 			}
 		}
+		item.Remaining = math.Max(0, item.Remaining)
 		view.API = append(view.API, item)
 	}
 	return view, nil

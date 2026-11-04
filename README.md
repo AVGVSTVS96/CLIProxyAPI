@@ -358,9 +358,11 @@ an API key), `remaining`, `allowance`, `monthlyCap` (USD), and `startsAt`,
 Console; it contains no credentials. Missing files mean no recorded grants;
 invalid observations return an error. File changes invalidate the dashboard view.
 
-The recorded balance is not reduced by estimated proxy costs: receipts cover only
-requests through this proxy and do not establish Anthropic's billing debits. The
-normal API key cannot read admin billing reports. Cloud promotional balances come
-from the account pool's authenticated Anthropic usage reads and carry their own
-sample timestamp; missing dollar fields remain unknown. Weekly limits remain a
+The reported `remaining` is the recorded Console balance less the proxy's priced
+spend on that credential since `observedAt`; `recorded` keeps the Console reading.
+It covers only requests through this proxy, at list prices, so record a fresh
+Console balance to correct drift. The normal API key cannot read admin billing
+reports. Cloud promotional balances come from the account pool's authenticated
+Anthropic usage reads, every five minutes while an account holds one, and carry
+their own sample timestamp. Weekly limits remain a
 separate percentage allowance. No model requests are made to obtain these values.

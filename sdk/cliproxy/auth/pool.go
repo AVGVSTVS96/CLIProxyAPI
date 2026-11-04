@@ -32,6 +32,7 @@ import (
 
 const (
 	poolStaleAfter    = 20 * time.Minute
+	poolCloudEvery    = 5 * time.Minute
 	poolResetsEvery   = time.Hour
 	poolPlanEvery     = 24 * time.Hour
 	poolLogEvery      = 15 * time.Minute
@@ -544,7 +545,8 @@ func (p *claudePoolState) logReadingLocked(account string, r PoolReading) {
 }
 
 // StartPoolSampler reads each Claude account's limits, held resets and plan, every minute
-// from response headers and, when those are stale, from Anthropic's usage endpoint.
+// from response headers and, when those are stale or a cloud credit's balance is five
+// minutes old, from Anthropic's usage endpoint.
 func StartPoolSampler(ctx context.Context, m *Manager) {
 	go func() {
 		ticker := time.NewTicker(time.Minute)
@@ -584,7 +586,8 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 			continue
 		}
 		j := job{auth: auth, account: id,
-			usage:  now.UnixMilli()-a.reading.At > poolStaleAfter.Milliseconds(),
+			usage: now.UnixMilli()-a.reading.At > poolStaleAfter.Milliseconds() ||
+				a.cloud != nil && now.UnixMilli()-a.cloud.SampledAt > poolCloudEvery.Milliseconds(),
 			resets: now.UnixMilli()-a.resetsAt > poolResetsEvery.Milliseconds(),
 			plan:   a.plan == nil || now.UnixMilli()-a.plan.At > poolPlanEvery.Milliseconds()}
 		if enabled && (j.usage || j.resets || j.plan) {
