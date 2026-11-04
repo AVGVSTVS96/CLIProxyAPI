@@ -5,6 +5,11 @@ package usage
 // Event is one request's accounting, in the same JSON shape token-tracker's
 // UsageEvent uses, so its history imports as is and ids match across machines.
 type Event struct {
+	Source             string   `json:"source,omitempty"`
+	ResponseID         string   `json:"responseId,omitempty"`
+	UpstreamRequestID  string   `json:"upstreamRequestId,omitempty"`
+	AccountID          string   `json:"accountId,omitempty"`
+	Failed             bool     `json:"failed,omitempty"`
 	ID                 string   `json:"id"`
 	Timestamp          string   `json:"timestamp"`
 	Harness            string   `json:"harness"`
@@ -17,6 +22,7 @@ type Event struct {
 	OutputTokens       int64    `json:"outputTokens"`
 	CacheReadTokens    int64    `json:"cacheReadTokens"`
 	CacheWriteTokens   int64    `json:"cacheWriteTokens"`
+	UnclassifiedTokens int64    `json:"unclassifiedTokens,omitempty"`
 	ReasoningTokens    int64    `json:"reasoningTokens"`
 	CostUSD            float64  `json:"costUsd"`
 	ReportedCostUSD    *float64 `json:"reportedCostUsd,omitempty"`

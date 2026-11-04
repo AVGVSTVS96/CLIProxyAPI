@@ -62,6 +62,7 @@ type Service struct {
 
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
+	usageStop     func()
 
 	// server is the HTTP API server instance.
 	server *api.Server

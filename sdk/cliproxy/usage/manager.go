@@ -64,6 +64,10 @@ type Record struct {
 	ResponseServiceTier string
 	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
 	ResponseModel string
+	// ResponseID is the upstream response identity shared with client transcripts.
+	ResponseID string
+	// AccountID is the provider account identity, distinct from the credential file.
+	AccountID string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
@@ -628,6 +632,7 @@ type Manager struct {
 	once     sync.Once
 	stopOnce sync.Once
 	cancel   context.CancelFunc
+	done     chan struct{}
 
 	mu     sync.Mutex
 	cond   *sync.Cond
@@ -641,7 +646,7 @@ type Manager struct {
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	m := &Manager{}
+	m := &Manager{done: make(chan struct{})}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -666,6 +671,7 @@ func (m *Manager) Stop() {
 	if m == nil {
 		return
 	}
+	m.Start(context.Background())
 	m.stopOnce.Do(func() {
 		if m.cancel != nil {
 			m.cancel()
@@ -675,6 +681,7 @@ func (m *Manager) Stop() {
 		m.mu.Unlock()
 		m.cond.Broadcast()
 	})
+	<-m.done
 }
 
 // Register appends a plugin to the delivery list.
@@ -767,6 +774,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 }
 
 func (m *Manager) run(ctx context.Context) {
+	defer close(m.done)
 	for {
 		m.mu.Lock()
 		for !m.closed && len(m.queue) == 0 {

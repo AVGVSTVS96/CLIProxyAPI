@@ -372,11 +372,12 @@ func eventsEqual(a, b *Event) bool {
 		a.RawModel == b.RawModel && a.Project == b.Project && strEq(a.Repository, b.Repository) &&
 		a.SessionID == b.SessionID && a.InputTokens == b.InputTokens && a.OutputTokens == b.OutputTokens &&
 		a.CacheReadTokens == b.CacheReadTokens && a.CacheWriteTokens == b.CacheWriteTokens &&
-		a.ReasoningTokens == b.ReasoningTokens && a.CostUSD == b.CostUSD && floatEq(a.ReportedCostUSD, b.ReportedCostUSD) &&
+		a.ReasoningTokens == b.ReasoningTokens && a.UnclassifiedTokens == b.UnclassifiedTokens && a.CostUSD == b.CostUSD && floatEq(a.ReportedCostUSD, b.ReportedCostUSD) &&
 		a.CostKnown == b.CostKnown && strEq(a.ServiceTier, b.ServiceTier) && intEq(a.CacheWrite1hTokens, b.CacheWrite1hTokens) &&
 		intEq(a.Requests, b.Requests) && a.DeviceID == b.DeviceID && a.SessionTitle == b.SessionTitle &&
 		a.ProjectName == b.ProjectName && a.T3ThreadID == b.T3ThreadID && a.T3ThreadURL == b.T3ThreadURL &&
-		a.Entrypoint == b.Entrypoint
+		a.Entrypoint == b.Entrypoint && a.Source == b.Source && a.ResponseID == b.ResponseID &&
+		a.UpstreamRequestID == b.UpstreamRequestID && a.AccountID == b.AccountID && a.Failed == b.Failed
 }
 
 // Events is every device's records, one per harness and id across devices (the larger
@@ -427,6 +428,7 @@ func (s *FileStore) Events() []Event {
 		}
 	}
 	s.mu.Unlock()
+	events = reconcileProxy(events)
 	for i := range events {
 		events[i], _ = policy.Reprice(events[i])
 	}

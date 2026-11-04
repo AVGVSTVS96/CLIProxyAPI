@@ -39,6 +39,7 @@ type UsageReporter struct {
 	model                string
 	alias                string
 	authID               string
+	accountID            string
 	authIndex            string
 	authMu               sync.RWMutex
 	accessTokenHash      string
@@ -66,6 +67,7 @@ type UsageReporter struct {
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
 	responseModel string
+	responseID    string
 	// responseModelFinal marks that a terminal event already reported the served
 	// model, so later frames skip parsing entirely.
 	responseModelFinal atomic.Bool
@@ -151,6 +153,10 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
+		reporter.accountID = auth.ID
+		if id, ok := auth.Metadata["account_uuid"].(string); ok && strings.TrimSpace(id) != "" {
+			reporter.accountID = strings.TrimSpace(id)
+		}
 		reporter.authIndex = auth.EnsureIndex()
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 	}
@@ -218,7 +224,26 @@ func (r *UsageReporter) accessTokenFingerprint() string {
 // ObserveResponseModel stores the model reported by an upstream response or event and
 // ignores payloads without one; the substitution warning is emitted at publish time.
 func (r *UsageReporter) ObserveResponseModel(payload []byte) {
-	if r == nil || r.responseModelFinal.Load() {
+	if r == nil {
+		return
+	}
+	r.responseModelMu.RLock()
+	needsIdentity := r.responseID == ""
+	r.responseModelMu.RUnlock()
+	if needsIdentity {
+		if data := jsonPayload(payload); len(data) > 0 {
+			for _, path := range []string{"message.id", "response.id", "id"} {
+				id := gjson.GetBytes(data, path).String()
+				if id != "" && len(id) <= 256 {
+					r.responseModelMu.Lock()
+					r.responseID = id
+					r.responseModelMu.Unlock()
+					break
+				}
+			}
+		}
+	}
+	if r.responseModelFinal.Load() {
 		return
 	}
 	provider := ""
@@ -610,6 +635,11 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+	if r != nil && record.Model == r.model {
+		r.responseModelMu.RLock()
+		record.ResponseID = r.responseID
+		r.responseModelMu.RUnlock()
+	}
 	if r != nil {
 		ctx = usage.WithCapturedIdentity(ctx, r.apiKey, r.accessProvider, r.isNativeKey)
 	}
@@ -693,6 +723,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		SessionID:            r.sessionID,
 		ParentSessionID:      r.parentSessionID,
 		AuthID:               r.authID,
+		AccountID:            r.accountID,
 		AuthIndex:            r.authIndex,
 		AccessTokenSHA256:    r.accessTokenFingerprint(),
 		AuthType:             r.authType,

@@ -303,7 +303,7 @@ func zeroNaN(f float64) float64 {
 }
 
 func hasPricingMetadata(e *Event, resolved *resolvedPrice) bool {
-	return ((resolved != nil && resolved.kind == priceCustom) || e.ServiceTier != nil) &&
+	return e.UnclassifiedTokens == 0 && ((resolved != nil && resolved.kind == priceCustom) || e.ServiceTier != nil) &&
 		(e.CacheWriteTokens == 0 || e.CacheWrite1hTokens != nil)
 }
 

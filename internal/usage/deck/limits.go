@@ -205,6 +205,9 @@ func accountLookup(history []Binding) func(event *prepared) string {
 		bySession[row.SessionID] = append(bySession[row.SessionID], row)
 	}
 	return func(event *prepared) string {
+		if event.AccountID != "" {
+			return event.AccountID
+		}
 		list := bySession[event.SessionID]
 		if len(list) == 0 || event.Harness != "claude" || math.IsNaN(event.millis) {
 			return ""

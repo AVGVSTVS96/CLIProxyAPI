@@ -168,7 +168,8 @@ type Facet struct {
 
 // Sources says where the view's data came from and when.
 type Sources struct {
-	Devices []usage.Device `json:"devices"`
+	Devices    []usage.Device `json:"devices"`
+	ProxySince *float64       `json:"proxySince"`
 }
 
 // UsageView is the Usage page: totals, the ranked rows, the top-seven series

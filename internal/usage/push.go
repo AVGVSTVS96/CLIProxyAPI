@@ -111,7 +111,7 @@ func eventDigest(e *Event) uint64 {
 	str := func(s string) { _, _ = h.WriteString(s); _ = h.WriteByte(0) }
 	num := func(n int64) { _, _ = h.WriteString(strconv.FormatInt(n, 36)); _ = h.WriteByte(0) }
 	for _, s := range []string{e.ID, e.Timestamp, e.Harness, e.Model, e.RawModel, e.Project, e.SessionID, e.DeviceID,
-		e.SessionTitle, e.ProjectName, e.T3ThreadID, e.T3ThreadURL} {
+		e.SessionTitle, e.ProjectName, e.T3ThreadID, e.T3ThreadURL, e.Entrypoint, e.Source, e.ResponseID, e.UpstreamRequestID, e.AccountID} {
 		str(s)
 	}
 	for _, p := range []*string{e.Repository, e.ServiceTier} {
@@ -121,7 +121,7 @@ func eventDigest(e *Event) uint64 {
 			str(*p)
 		}
 	}
-	for _, n := range []int64{e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens, e.ReasoningTokens,
+	for _, n := range []int64{e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens, e.ReasoningTokens, e.UnclassifiedTokens,
 		int64(math.Float64bits(e.CostUSD))} {
 		num(n)
 	}
@@ -136,6 +136,9 @@ func eventDigest(e *Event) uint64 {
 		str("\x01nil")
 	} else {
 		num(int64(math.Float64bits(*e.ReportedCostUSD)))
+	}
+	if e.Failed {
+		str("failed")
 	}
 	if e.CostKnown {
 		str("known")
@@ -246,7 +249,7 @@ func validateBatch(batch Batch, localID string) string {
 	for i := range batch.Events {
 		e := &batch.Events[i]
 		values := []float64{float64(e.InputTokens), float64(e.OutputTokens), float64(e.CacheReadTokens),
-			float64(e.CacheWriteTokens), float64(e.ReasoningTokens), e.CostUSD}
+			float64(e.CacheWriteTokens), float64(e.ReasoningTokens), float64(e.UnclassifiedTokens), e.CostUSD}
 		if e.ReportedCostUSD != nil {
 			values = append(values, *e.ReportedCostUSD)
 		}

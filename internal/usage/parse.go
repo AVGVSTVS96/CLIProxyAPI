@@ -289,7 +289,7 @@ func fileSession(file string) string {
 }
 
 func tokenTotal(e *Event) int64 {
-	return e.InputTokens + e.OutputTokens + e.CacheReadTokens + e.CacheWriteTokens
+	return e.InputTokens + e.OutputTokens + e.CacheReadTokens + e.CacheWriteTokens + e.UnclassifiedTokens
 }
 
 // ordinalValue is the JSON value fallback ids hash: a numeric or non-empty string

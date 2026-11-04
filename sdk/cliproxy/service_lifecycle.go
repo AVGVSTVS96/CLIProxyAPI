@@ -113,8 +113,12 @@ func (s *Service) Run(ctx context.Context) error {
 			log.Errorf("usage: %v", errUsage)
 		} else {
 			s.serverOptions = append(s.serverOptions, api.WithUsageStore(local))
+			done := make(chan struct{})
+			usageCtx, cancelUsage := context.WithCancel(ctx)
+			s.usageStop = func() { cancelUsage(); <-done; local.Close() }
 			go func() {
-				if errRun := local.Run(ctx); errRun != nil {
+				defer close(done)
+				if errRun := local.Run(usageCtx); errRun != nil {
 					log.Errorf("usage collection stopped: %v", errRun)
 				}
 			}()
@@ -412,6 +416,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
+		if s.usageStop != nil {
+			s.usageStop()
+		}
 	})
 	return shutdownErr
 }

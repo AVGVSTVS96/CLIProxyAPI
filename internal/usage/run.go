@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -85,12 +86,13 @@ func openMachine(cfg config.UsageConfig) (*machine, error) {
 // that keeps this machine's own records in it current.
 type Local struct {
 	*FileStore
-	machine *machine
-	unlock  func()
+	machine   *machine
+	unlock    func()
+	closeOnce sync.Once
 }
 
 // Open opens the store under cfg.StateDir with everything already saved in it. Run then
-// keeps this machine's records current; the state directory stays locked until it returns.
+// keeps this machine's records current; the state directory stays locked until Close.
 func Open(cfg config.UsageConfig) (*Local, error) {
 	m, err := openMachine(cfg)
 	if err != nil {
@@ -109,15 +111,40 @@ func Open(cfg config.UsageConfig) (*Local, error) {
 	return &Local{FileStore: store, machine: m, unlock: unlock}, nil
 }
 
+// Close releases the store after the collector and request dispatcher have stopped.
+func (l *Local) Close() {
+	l.closeOnce.Do(func() {
+		shared.CompareAndSwap(l.FileStore, nil)
+		l.mu.Lock()
+		for _, device := range l.devices {
+			if device.journal != nil {
+				if err := device.journal.Sync(); err != nil {
+					log.WithError(err).Error("usage: sync journal")
+				}
+				if err := device.journal.Close(); err != nil {
+					log.WithError(err).Error("usage: close journal")
+				}
+				device.journal = nil
+			}
+		}
+		l.mu.Unlock()
+		l.unlock()
+	})
+}
+
 // Run collects this machine's logs into the store, then follows them and refreshes the
 // pricing catalog daily, until ctx ends. With usage.github-actions it also reads GitHub
 // Actions records.
 func (l *Local) Run(ctx context.Context) error {
-	defer l.unlock()
+	ctx, cancel := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	defer func() { cancel(); workers.Wait() }()
 	m := l.machine
-	go m.pricing.RunRefresh(ctx)
+	workers.Add(1)
+	go func() { defer workers.Done(); m.pricing.RunRefresh(ctx) }()
 	if m.github {
-		go newGitHubReader(m.stateDir, l.FileStore).run(ctx)
+		workers.Add(1)
+		go func() { defer workers.Done(); newGitHubReader(m.stateDir, l.FileStore).run(ctx) }()
 	}
 	pass := func() {
 		started := time.Now()

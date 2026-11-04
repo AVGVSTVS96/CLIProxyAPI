@@ -177,7 +177,7 @@ func prepare(events []usage.Event) []prepared {
 			providers[event.Model] = name
 		}
 		out[i] = prepared{Event: event, millis: parseMillis(event.Timestamp), provider: name,
-			tokens: float64(event.InputTokens + event.OutputTokens + event.CacheReadTokens + event.CacheWriteTokens)}
+			tokens: float64(event.InputTokens + event.OutputTokens + event.CacheReadTokens + event.CacheWriteTokens + event.UnclassifiedTokens)}
 	}
 	return out
 }

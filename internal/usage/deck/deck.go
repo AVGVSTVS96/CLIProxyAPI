@@ -607,6 +607,14 @@ func (d *Deck) Usage(q Query) (UsageView, error) {
 			d.views = map[string]*UsageView{}
 		}
 		view = usageView(c.value, c.parts, d.labelsLocked(), q)
+		for _, event := range d.opts.Store.Events() {
+			if event.Source == "proxy" {
+				at := parseMillis(event.Timestamp)
+				if view.Sources.ProxySince == nil || at < *view.Sources.ProxySince {
+					view.Sources.ProxySince = ptr(at)
+				}
+			}
+		}
 		d.views[key] = view
 	}
 	return withLive(view, d.live.order), nil
