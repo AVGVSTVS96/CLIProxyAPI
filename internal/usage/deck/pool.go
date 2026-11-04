@@ -30,9 +30,10 @@ type HeldReset struct {
 
 // Account is one pooled Claude account and its standing for new work.
 type Account struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Plan  string `json:"plan"`
+	Cloud *coreauth.PoolCredit `json:"cloud"`
+	ID    string               `json:"id"`
+	Label string               `json:"label"`
+	Plan  string               `json:"plan"`
 	// When the account's current plan started, from its profile; not when it joined the pool.
 	Since       *int64      `json:"since"`
 	SignInUntil *int64      `json:"signInUntil"`
@@ -184,7 +185,7 @@ func parsePool(snap coreauth.PoolSnapshot, revision string, seats []seat) *poolS
 	state := &poolState{pool: poolOf(snap, revision), seats: seats}
 	for rank, a := range snap.Accounts {
 		account := &Account{
-			ID: a.Account, Label: a.Email, Rank: ptr(rank + 1), Standing: standingOf(a, rank), Reasons: reasonsOf(a, snap),
+			Cloud: a.Cloud, ID: a.Account, Label: a.Email, Rank: ptr(rank + 1), Standing: standingOf(a, rank), Reasons: reasonsOf(a, snap),
 			FiveHour:    windowOf(a.Reading.FiveHour, a.Reading.At, fiveHours, snap.SessionCutoff),
 			Week:        windowOf(a.Reading.Week, a.Reading.At, weekMs, snap.WeeklyCutoff),
 			Working:     a.Working,

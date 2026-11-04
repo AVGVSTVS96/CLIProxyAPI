@@ -56,6 +56,15 @@ type PoolReading struct {
 	At       int64       `json:"at"`
 }
 
+// PoolCredit is an upstream dollar balance, sampled independently of response-header limits.
+type PoolCredit struct {
+	Limit     *float64 `json:"limit"`
+	Used      *float64 `json:"used"`
+	Remaining *float64 `json:"remaining"`
+	ExpiresAt *int64   `json:"expiresAt"`
+	SampledAt int64    `json:"sampledAt"`
+}
+
 // PoolReset is a limit reset the account holds.
 type PoolReset struct {
 	ID        string `json:"id"`
@@ -78,6 +87,7 @@ type PoolPlan struct {
 }
 
 type poolAccount struct {
+	cloud       *PoolCredit
 	reading     PoolReading
 	logged      PoolReading
 	resets      []PoolReset
@@ -212,6 +222,7 @@ func (p *claudePoolState) readingLocked(auth *Auth, now time.Time) PoolReading {
 
 // PoolRow is one account's standing for new work, in rank order.
 type PoolRow struct {
+	Cloud         *PoolCredit `json:"cloud"`
 	AuthID        string      `json:"authId"`
 	Account       string      `json:"account"`
 	Email         string      `json:"email"`
@@ -286,7 +297,7 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 		r := p.readingLocked(auth, now)
 		incoming := weight
 		row := PoolRow{AuthID: auth.ID, Account: id, Email: metaString(auth, "email"), Reading: r, auth: auth,
-			Resets: a.resets, AtLimit: a.atLimit, Plan: a.plan, NeedsReauth: a.needsReauth, Disabled: auth.Disabled,
+			Cloud: a.cloud, Resets: a.resets, AtLimit: a.atLimit, Plan: a.plan, NeedsReauth: a.needsReauth, Disabled: auth.Disabled,
 			SignInExpires: metaString(auth, "refresh_expired")}
 		var load float64
 		row.Working, load = p.workingLocked(id, now)
@@ -614,6 +625,12 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 // readUsage reads an account's limits and held resets from Anthropic's usage endpoint.
 func (p *claudePoolState) readUsage(ctx context.Context, account, token string, now time.Time) {
 	var body struct {
+		Cloud *struct {
+			Limit     *float64 `json:"limit_dollars"`
+			Used      *float64 `json:"used_dollars"`
+			Remaining *float64 `json:"remaining_dollars"`
+			Expires   *string  `json:"resets_at"`
+		} `json:"iguana_necktie"`
 		FiveHour *usageWindow `json:"five_hour"`
 		SevenDay *usageWindow `json:"seven_day"`
 		Cedar    *struct {
@@ -633,6 +650,10 @@ func (p *claudePoolState) readUsage(ctx context.Context, account, token string, 
 	case status == http.StatusTooManyRequests:
 		a.retryAt = now.Add(retry).UnixMilli()
 	case status == http.StatusOK:
+		a.cloud = nil
+		if body.Cloud != nil {
+			a.cloud = &PoolCredit{Limit: body.Cloud.Limit, Used: body.Cloud.Used, Remaining: body.Cloud.Remaining, ExpiresAt: isoMillis(body.Cloud.Expires), SampledAt: now.UnixMilli()}
+		}
 		var stale bool
 		a.reading, stale = a.settled(PoolReading{FiveHour: body.FiveHour.window(), Week: body.SevenDay.window(), At: now.UnixMilli()}, now)
 		p.logReadingLocked(account, a.reading)

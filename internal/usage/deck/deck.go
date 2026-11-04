@@ -195,6 +195,9 @@ func New(opts Options) *Deck {
 	logsChanged := burst(ctx, 30*time.Second, func() { d.stream.stale("accounts") })
 	if d.paths.stateDir != "" {
 		go d.watch(d.poolChanged, watchSpec{dir: d.paths.stateDir, depth: 1, match: func(rel string) bool {
+			if rel == "credits.json" {
+				d.stream.stale("credits")
+			}
 			if rel == "usage-history.ndjson" || rel == "attribution.ndjson" {
 				logsChanged()
 				usageChanged()
@@ -443,7 +446,7 @@ func (d *Deck) resetViews() {
 	d.mu.Lock()
 	d.views = map[string]*UsageView{}
 	d.mu.Unlock()
-	d.stream.stale("usage")
+	d.stream.stale("usage", "credits")
 }
 
 // usageChanged reloads the ranges in view after the store, limits or plans change.
@@ -534,7 +537,7 @@ func (d *Deck) warm(r Range) {
 		if r == Week || r == Today {
 			d.publish()
 		}
-		d.stream.stale("usage")
+		d.stream.stale("usage", "credits")
 	}
 }
 
@@ -727,6 +730,10 @@ func (d *Deck) Register(group *gin.RouterGroup) {
 	})
 	group.GET("/sessions", func(c *gin.Context) {
 		reply(c, d.SessionUsage(pick(c.Query("range"), Ranges, Week)), nil)
+	})
+	group.GET("/credits", func(c *gin.Context) {
+		view, err := d.Credits()
+		reply(c, view, err)
 	})
 	group.GET("/accounts", func(c *gin.Context) {
 		view, err := d.Accounts()

@@ -347,3 +347,20 @@ A Rust port of CLIProxyAPI that reads the same `config.yaml` and auth files and 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+### Dashboard credit observations
+
+`GET /v8/management/deck/credits` reports recorded API grants and matching proxy
+receipts. Place a JSON array in `credits.json` in `routing.pool.state-dir` with
+`account` (pool account ID), `organization`, `credentialId` (proxy auth ID, never
+an API key), `remaining`, `allowance`, `monthlyCap` (USD), and `startsAt`,
+`observedAt`, `expiresAt`, `renewsAt` (Unix milliseconds). Update it after checking
+Console; it contains no credentials. Missing files mean no recorded grants;
+invalid observations return an error. File changes invalidate the dashboard view.
+
+The recorded balance is not reduced by estimated proxy costs: receipts cover only
+requests through this proxy and do not establish Anthropic's billing debits. The
+normal API key cannot read admin billing reports. Cloud promotional balances come
+from the account pool's authenticated Anthropic usage reads and carry their own
+sample timestamp; missing dollar fields remain unknown. Weekly limits remain a
+separate percentage allowance. No model requests are made to obtain these values.
