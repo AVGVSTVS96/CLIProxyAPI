@@ -67,6 +67,10 @@ func (s *Server) setupRoutes() {
 	v1.Use(AuthMiddleware(s.accessManager))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+		v1.GET("/claude/runtime", func(c *gin.Context) {
+			runtime, reason := s.handlers.AuthManager.ClaudeRuntime(c.Query("prefix"))
+			c.JSON(http.StatusOK, gin.H{"runtime": runtime, "reason": reason})
+		})
 		v1.GET("/models/*model", func(c *gin.Context) {
 			c.Set(handlers.ModelDetailIDContextKey, strings.TrimPrefix(c.Param("model"), "/"))
 			s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers)(c)
