@@ -67,3 +67,73 @@ func TestCreditsFallThroughByPriorityThenToPlans(t *testing.T) {
 		t.Fatalf("every credit is empty, runtime = %s", runtime)
 	}
 }
+
+// A caller naming a bare model spends the credits in priority order, and a plan only once all are empty.
+func TestBareModelSpendsCreditsBeforePlans(t *testing.T) {
+	previous := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
+
+	const low = "Your credit balance is too low to access the Anthropic API."
+	rules := []internalconfig.RequestScopedErrorRule{{Status: 400, Match: []string{low}, Action: "continue-and-cooldown"}}
+	credit := func(id, priority string) *Auth {
+		return &Auth{ID: id, Provider: "claude", Prefix: "included", Status: StatusActive,
+			Attributes: map[string]string{"api_key": id + "-key", "priority": priority},
+			Metadata:   map[string]any{"request_scoped_errors": rules}}
+	}
+	plan := &Auth{ID: "plan", Provider: "claude", Status: StatusActive, Metadata: map[string]any{"email": "plan@example.com"}}
+	m := NewManager(nil, nil, nil)
+	reg := registry.GetGlobalRegistry()
+	for _, a := range []*Auth{credit("101", "100"), credit("5n", "300"), credit("shahidy", "200"), plan} {
+		model := "included/claude-opus-5-5"
+		if a.Prefix == "" {
+			model = "claude-opus-5-5"
+		}
+		reg.RegisterClient(a.ID, "claude", []*registry.ModelInfo{{ID: model}})
+		t.Cleanup(func() { reg.UnregisterClient(a.ID) })
+		if _, err := m.Register(context.Background(), a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	empty := map[string]bool{"101": true}
+	badRequest := false
+	var tried []string
+	m.RegisterExecutor(&mockCustomErrorExecutor{identifier: "claude", executeFn: func(_ context.Context, a *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+		tried = append(tried, a.ID)
+		if empty[a.ID] {
+			return cliproxyexecutor.Response{}, customStatusError{code: 400, msg: `{"type":"error","error":{"type":"invalid_request_error","message":"` + low + `"}}`}
+		}
+		if badRequest {
+			return cliproxyexecutor.Response{}, customStatusError{code: 400, msg: `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}`}
+		}
+		return cliproxyexecutor.Response{Payload: []byte(a.ID)}, nil
+	}})
+	send := func() string {
+		tried = nil
+		resp, err := m.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: "claude-opus-5-5"}, cliproxyexecutor.Options{})
+		if err != nil {
+			return "error"
+		}
+		return string(resp.Payload)
+	}
+
+	if got := send(); got != "5n" {
+		t.Fatalf("bare model went to %s (tried %v), want 5n", got, tried)
+	}
+	badRequest = true
+	if got := send(); got != "error" || len(tried) != 1 {
+		t.Fatalf("a request error on a funded credit reached %s (tried %v)", got, tried)
+	}
+	badRequest = false
+	empty["5n"] = true
+	if got := send(); got != "shahidy" {
+		t.Fatalf("after 5n ran out the bare model went to %s (tried %v), want shahidy", got, tried)
+	}
+	empty["shahidy"] = true
+	if got := send(); got != "plan" {
+		t.Fatalf("every credit is empty but the bare model went to %s (tried %v), want plan", got, tried)
+	}
+	if got := send(); got != "plan" || len(tried) != 1 {
+		t.Fatalf("with every credit cooling the plan should be reached directly, tried %v", tried)
+	}
+}
