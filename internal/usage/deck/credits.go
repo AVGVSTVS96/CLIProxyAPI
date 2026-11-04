@@ -54,12 +54,13 @@ func (d *Deck) Credits() (CreditsView, error) {
 		return view, fmt.Errorf("Credit observations are invalid.")
 	}
 	now := time.Now().UnixMilli()
+	events := d.opts.Store.Events()
 	for _, g := range grants {
 		if g.Account == "" || g.Organization == "" || g.CredentialID == "" || g.StartsAt <= 0 || g.StartsAt > g.ObservedAt || g.ObservedAt <= 0 || g.ObservedAt > now || g.ExpiresAt <= g.ObservedAt || g.Remaining < 0 || g.Allowance <= 0 || g.Remaining > g.Allowance || g.MonthlyCap < 0 {
 			return view, fmt.Errorf("Credit observations are invalid.")
 		}
 		item := CreditUsage{APICredit: g, Recorded: g.Remaining}
-		for _, e := range d.opts.Store.Events() {
+		for _, e := range events {
 			at := parseMillis(e.Timestamp)
 			if e.Source != "proxy" || e.AccountID != g.CredentialID || math.IsNaN(at) || at < float64(g.StartsAt) || at >= float64(g.ExpiresAt) || at > float64(now) {
 				continue
