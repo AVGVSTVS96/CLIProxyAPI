@@ -48,6 +48,10 @@ type FileStore struct {
 	snapshot         []Event
 	snapshotRevision uint64
 	snapshotPolicy   *PricingPolicy
+	snapshotAt       time.Time
+	// SnapshotAge lets Events serve its last snapshot for this long after a change, so steady
+	// traffic rebuilds it once per interval rather than once per reader. Revision follows it.
+	SnapshotAge time.Duration
 
 	subsMu  sync.Mutex
 	subs    map[int]func()
@@ -389,7 +393,8 @@ func (s *FileStore) Events() []Event {
 	defer s.snapshotMu.Unlock()
 	s.mu.Lock()
 	revision := s.revision
-	if s.snapshot != nil && s.snapshotRevision == revision && s.snapshotPolicy == policy {
+	if s.snapshot != nil && s.snapshotPolicy == policy &&
+		(s.snapshotRevision == revision || time.Since(s.snapshotAt) < s.SnapshotAge) {
 		s.mu.Unlock()
 		return s.snapshot
 	}
@@ -433,7 +438,7 @@ func (s *FileStore) Events() []Event {
 		events[i], _ = policy.Reprice(events[i])
 	}
 	sortEvents(events)
-	s.snapshot, s.snapshotRevision, s.snapshotPolicy = events, revision, policy
+	s.snapshot, s.snapshotRevision, s.snapshotPolicy, s.snapshotAt = events, revision, policy, time.Now()
 	return events
 }
 
@@ -458,9 +463,15 @@ func (s *FileStore) Devices() []Device {
 	return append(out, others...)
 }
 
-// Revision bumps on any change to events or prices.
+// Revision bumps on any change to events or prices, as of the snapshot Events would return now.
 func (s *FileStore) Revision() uint64 {
-	s.pricing.Policy()
+	policy := s.pricing.Policy()
+	s.snapshotMu.Lock()
+	if s.snapshot != nil && s.snapshotPolicy == policy && time.Since(s.snapshotAt) < s.SnapshotAge {
+		defer s.snapshotMu.Unlock()
+		return s.snapshotRevision
+	}
+	s.snapshotMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.revision

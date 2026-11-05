@@ -103,6 +103,21 @@ func TestStoreKeepsOneCopyAcrossDevices(t *testing.T) {
 	}
 }
 
+func TestSnapshotServesReadersUntilItAges(t *testing.T) {
+	store, _ := OpenStore(t.TempDir(), "server", "server", NewPricing(""))
+	store.SnapshotAge = time.Hour
+	_, _ = store.Apply(Batch{Device: Device{ID: "server"}, Events: []Event{storeEvent("x", 5)}}, false)
+	first, revision := store.Events(), store.Revision()
+	_, _ = store.Apply(Batch{Device: Device{ID: "server"}, Events: []Event{storeEvent("y", 1)}}, false)
+	if len(store.Events()) != len(first) || store.Revision() != revision {
+		t.Fatal("a young snapshot answers both Events and Revision")
+	}
+	store.SnapshotAge = 0
+	if len(store.Events()) != 2 || store.Revision() == revision {
+		t.Fatal("an aged snapshot is rebuilt with the new revision")
+	}
+}
+
 func TestPushIntoIngestEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	dir := t.TempDir()

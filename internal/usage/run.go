@@ -107,6 +107,7 @@ func Open(cfg config.UsageConfig) (*Local, error) {
 		unlock()
 		return nil, err
 	}
+	store.SnapshotAge = 10 * time.Second
 	shared.Store(store)
 	return &Local{FileStore: store, machine: m, unlock: unlock}, nil
 }
