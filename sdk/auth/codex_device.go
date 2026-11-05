@@ -66,37 +66,70 @@ func (a *CodexAuthenticator) loginWithDeviceFlow(ctx context.Context, cfg *confi
 		ctx = context.Background()
 	}
 
-	httpClient := util.SetProxy(&cfg.SDKConfig, &http.Client{})
-
-	userCodeResp, err := requestCodexDeviceUserCode(ctx, httpClient)
+	login, err := StartCodexDeviceLogin(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	deviceCode := strings.TrimSpace(userCodeResp.UserCode)
-	if deviceCode == "" {
-		deviceCode = strings.TrimSpace(userCodeResp.UserCodeAlt)
-	}
-	deviceAuthID := strings.TrimSpace(userCodeResp.DeviceAuthID)
-	if deviceCode == "" || deviceAuthID == "" {
-		return nil, fmt.Errorf("codex device flow did not return required fields")
-	}
-
-	pollInterval := parseCodexDevicePollInterval(userCodeResp.Interval)
-
 	fmt.Println("Starting Codex device authentication...")
-	fmt.Printf("Codex device URL: %s\n", codexDeviceVerificationURL)
-	fmt.Printf("Codex device code: %s\n", deviceCode)
+	fmt.Printf("Codex device URL: %s\n", login.VerificationURL)
+	fmt.Printf("Codex device code: %s\n", login.UserCode)
 
 	if !opts.NoBrowser {
 		if !browser.IsAvailable() {
 			log.Warn("No browser available; please open the device URL manually")
-		} else if errOpen := browser.OpenURL(codexDeviceVerificationURL); errOpen != nil {
+		} else if errOpen := browser.OpenURL(login.VerificationURL); errOpen != nil {
 			log.Warnf("Failed to open browser automatically: %v", errOpen)
 		}
 	}
 
-	tokenResp, err := pollCodexDeviceToken(ctx, httpClient, deviceAuthID, deviceCode, pollInterval)
+	authBundle, err := login.Wait(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return a.buildAuthRecord(codex.NewCodexAuth(cfg), authBundle)
+}
+
+// CodexDeviceLogin is a started Codex device-code sign-in: the user opens
+// VerificationURL in any browser, signs in and enters UserCode.
+type CodexDeviceLogin struct {
+	UserCode        string
+	VerificationURL string
+
+	cfg          *config.Config
+	client       *http.Client
+	deviceAuthID string
+	interval     time.Duration
+}
+
+// StartCodexDeviceLogin asks OpenAI for a device code.
+func StartCodexDeviceLogin(ctx context.Context, cfg *config.Config) (*CodexDeviceLogin, error) {
+	client := util.SetProxy(&cfg.SDKConfig, &http.Client{})
+	resp, err := requestCodexDeviceUserCode(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	userCode := strings.TrimSpace(resp.UserCode)
+	if userCode == "" {
+		userCode = strings.TrimSpace(resp.UserCodeAlt)
+	}
+	deviceAuthID := strings.TrimSpace(resp.DeviceAuthID)
+	if userCode == "" || deviceAuthID == "" {
+		return nil, fmt.Errorf("codex device flow did not return required fields")
+	}
+	return &CodexDeviceLogin{
+		UserCode:        userCode,
+		VerificationURL: codexDeviceVerificationURL,
+		cfg:             cfg,
+		client:          client,
+		deviceAuthID:    deviceAuthID,
+		interval:        parseCodexDevicePollInterval(resp.Interval),
+	}, nil
+}
+
+// Wait polls until the user enters the code, then exchanges it for tokens.
+func (l *CodexDeviceLogin) Wait(ctx context.Context) (*codex.CodexAuthBundle, error) {
+	tokenResp, err := pollCodexDeviceToken(ctx, l.client, l.deviceAuthID, l.UserCode, l.interval)
 	if err != nil {
 		return nil, err
 	}
@@ -108,21 +141,16 @@ func (a *CodexAuthenticator) loginWithDeviceFlow(ctx context.Context, cfg *confi
 		return nil, fmt.Errorf("codex device flow token response missing required fields")
 	}
 
-	authSvc := codex.NewCodexAuth(cfg)
-	authBundle, err := authSvc.ExchangeCodeForTokensWithRedirect(
+	bundle, err := codex.NewCodexAuth(l.cfg).ExchangeCodeForTokensWithRedirect(
 		ctx,
 		authCode,
 		codexDeviceTokenExchangeRedirectURI,
-		&codex.PKCECodes{
-			CodeVerifier:  codeVerifier,
-			CodeChallenge: codeChallenge,
-		},
+		&codex.PKCECodes{CodeVerifier: codeVerifier, CodeChallenge: codeChallenge},
 	)
 	if err != nil {
 		return nil, codex.NewAuthenticationError(codex.ErrCodeExchangeFailed, err)
 	}
-
-	return a.buildAuthRecord(authSvc, authBundle)
+	return bundle, nil
 }
 
 func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*codexDeviceUserCodeResponse, error) {

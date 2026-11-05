@@ -46,6 +46,32 @@ func isWebUIRequest(c *gin.Context) bool {
 	}
 }
 
+// browserOnThisMachine reports whether the request comes from a browser on
+// this machine, the only browser a localhost OAuth redirect brings back here.
+func browserOnThisMachine(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return true
+	}
+	host, _, errSplit := net.SplitHostPort(c.Request.RemoteAddr)
+	if errSplit != nil {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() {
+		return true
+	}
+	addrs, errAddrs := net.InterfaceAddrs()
+	if errAddrs != nil {
+		return true
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func startCallbackForwarder(port int, provider, targetBase string) (*callbackForwarder, error) {
 	callbackForwardersMu.Lock()
 	prev := callbackForwarders[port]

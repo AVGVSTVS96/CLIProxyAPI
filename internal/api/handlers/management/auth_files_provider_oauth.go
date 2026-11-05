@@ -23,6 +23,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -68,8 +69,16 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	// Initialize Claude auth service
 	anthropicAuth := claude.NewClaudeAuthWithProxyURL(cfg, sessionProxyURL)
 
-	// Generate authorization URL (then override redirect_uri to reuse server port)
-	authURL, state, err := anthropicAuth.GenerateAuthURL(state, pkceCodes)
+	// A browser on another device can't reach the localhost callback, so it
+	// gets Claude's hosted page, which shows a code to paste back.
+	isWebUI := isWebUIRequest(c)
+	pasteCode := isWebUI && !browserOnThisMachine(c)
+	redirectURI := claude.RedirectURI
+	if pasteCode {
+		redirectURI = claude.ManualRedirectURI
+	}
+
+	authURL, state, err := anthropicAuth.GenerateAuthURLWithRedirect(state, pkceCodes, redirectURI)
 	if err != nil {
 		log.Errorf("Failed to generate authorization URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
@@ -78,9 +87,8 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	RegisterOAuthSessionWithProxy(state, "anthropic", sessionProxyURL)
 
-	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
-	if isWebUI {
+	if isWebUI && !pasteCode {
 		targetURL, errTarget := h.managementCallbackURL("/anthropic/callback")
 		if errTarget != nil {
 			log.WithError(errTarget).Error("failed to compute anthropic callback target")
@@ -124,8 +132,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		}
 
 		fmt.Println("Waiting for authentication callback...")
-		// Wait up to 5 minutes
-		resultMap, errWait := waitForFile(waitFile, 5*time.Minute)
+		resultMap, errWait := waitForFile(waitFile, 10*time.Minute)
 		if errWait != nil {
 			if errors.Is(errWait, errOAuthSessionNotPending) {
 				return
@@ -152,7 +159,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		code := strings.Split(rawCode, "#")[0]
 
 		// Exchange code for tokens using internal auth service
-		bundle, errExchange := anthropicAuth.ExchangeCodeForTokens(ctx, code, state, pkceCodes)
+		bundle, errExchange := anthropicAuth.ExchangeCodeForTokensWithRedirect(ctx, code, state, pkceCodes, redirectURI)
 		if errExchange != nil {
 			authErr := claude.NewAuthenticationError(claude.ErrCodeExchangeFailed, errExchange)
 			log.Errorf("Failed to exchange authorization code for tokens: %s", redactSessionProxyInString(authErr.Error(), sessionProxyURL))
@@ -202,7 +209,11 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		CompleteOAuthSession(state)
 	}()
 
-	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+	response := gin.H{"status": "ok", "url": authURL, "state": state}
+	if pasteCode {
+		response["flow"] = "code"
+	}
+	c.JSON(200, response)
 }
 
 func (h *Handler) RequestCodexToken(c *gin.Context) {
@@ -232,9 +243,20 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	// Initialize Codex auth service
 	openaiAuth := newCodexOAuthService(cfg)
 
-	// Generate authorization URL
-	authURL, err := openaiAuth.GenerateAuthURL(state, pkceCodes)
-	if err != nil {
+	// A browser on another device can't reach the localhost callback, so it
+	// signs in with a device code instead, which needs nothing pasted back.
+	isWebUI := isWebUIRequest(c)
+	var device *sdkAuth.CodexDeviceLogin
+	var authURL string
+	if isWebUI && !browserOnThisMachine(c) {
+		device, err = sdkAuth.StartCodexDeviceLogin(ctx, cfg)
+		if err != nil {
+			log.Errorf("Failed to start Codex device login: %s", redactSessionProxyInString(err.Error(), sessionProxyURL))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start device authorization flow"})
+			return
+		}
+		authURL = device.VerificationURL
+	} else if authURL, err = openaiAuth.GenerateAuthURL(state, pkceCodes); err != nil {
 		log.Errorf("Failed to generate authorization URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
 		return
@@ -246,9 +268,8 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		SetOAuthSessionTarget(state, sessionTarget)
 	}
 
-	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
-	if isWebUI {
+	if isWebUI && device == nil {
 		targetURL, errTarget := h.managementCallbackURL("/codex/callback")
 		if errTarget != nil {
 			log.WithError(errTarget).Error("failed to compute codex callback target")
@@ -268,45 +289,24 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 			defer stopCallbackForwarderInstance(codexCallbackPort, forwarder)
 		}
 
-		// Wait for callback file
-		waitFile := filepath.Join(cfg.AuthDir, fmt.Sprintf(".oauth-codex-%s.oauth", state))
-		deadline := time.Now().Add(5 * time.Minute)
-		var code string
-		for {
-			if !IsOAuthSessionPending(state, "codex") {
+		var bundle *codex.CodexAuthBundle
+		var errExchange error
+		if device != nil {
+			pollCtx, cancelPoll := context.WithCancel(ctx)
+			go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "codex")
+			bundle, errExchange = device.Wait(pollCtx)
+			cancelPoll()
+			if errExchange != nil && !IsOAuthSessionPending(state, "codex") {
 				return
 			}
-			if time.Now().After(deadline) {
-				authErr := codex.NewAuthenticationError(codex.ErrCallbackTimeout, fmt.Errorf("timeout waiting for OAuth callback"))
-				log.Error(codex.GetUserFriendlyMessage(authErr))
-				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+		} else {
+			code, ok := waitForCodexCallback(cfg.AuthDir, state)
+			if !ok {
 				return
 			}
-			if data, errR := os.ReadFile(waitFile); errR == nil {
-				var m map[string]string
-				_ = json.Unmarshal(data, &m)
-				_ = os.Remove(waitFile)
-				if errStr := m["error"]; errStr != "" {
-					oauthErr := codex.NewOAuthError(errStr, "", http.StatusBadRequest)
-					log.Error(codex.GetUserFriendlyMessage(oauthErr))
-					SetOAuthSessionError(state, "Bad Request")
-					return
-				}
-				if m["state"] != state {
-					authErr := codex.NewAuthenticationError(codex.ErrInvalidState, fmt.Errorf("expected %s, got %s", state, m["state"]))
-					SetOAuthSessionError(state, "State code error")
-					log.Error(codex.GetUserFriendlyMessage(authErr))
-					return
-				}
-				code = m["code"]
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
+			log.Debug("Authorization code received, exchanging for tokens...")
+			bundle, errExchange = openaiAuth.ExchangeCodeForTokens(ctx, code, pkceCodes)
 		}
-
-		log.Debug("Authorization code received, exchanging for tokens...")
-		// Exchange code for tokens using internal auth service
-		bundle, errExchange := openaiAuth.ExchangeCodeForTokens(ctx, code, pkceCodes)
 		if errExchange != nil {
 			authErr := codex.NewAuthenticationError(codex.ErrCodeExchangeFailed, errExchange)
 			SetOAuthSessionError(state, redactSessionProxyInString(oauthSessionErrorWithCause("Failed to exchange authorization code for tokens", errExchange), sessionProxyURL))
@@ -425,7 +425,48 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	if hasSessionTarget {
 		respPayload["target_auth_id"] = sessionTarget.AuthID
 	}
+	if device != nil {
+		respPayload["flow"] = "device"
+		respPayload["user_code"] = device.UserCode
+	}
 	c.JSON(200, respPayload)
+}
+
+// waitForCodexCallback waits up to 10 minutes for the callback file of a
+// browser login and returns its code, or false once the session has failed.
+func waitForCodexCallback(authDir, state string) (string, bool) {
+	waitFile := filepath.Join(authDir, fmt.Sprintf(".oauth-codex-%s.oauth", state))
+	deadline := time.Now().Add(10 * time.Minute)
+	for {
+		if !IsOAuthSessionPending(state, "codex") {
+			return "", false
+		}
+		if time.Now().After(deadline) {
+			authErr := codex.NewAuthenticationError(codex.ErrCallbackTimeout, fmt.Errorf("timeout waiting for OAuth callback"))
+			log.Error(codex.GetUserFriendlyMessage(authErr))
+			SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+			return "", false
+		}
+		if data, errRead := os.ReadFile(waitFile); errRead == nil {
+			var m map[string]string
+			_ = json.Unmarshal(data, &m)
+			_ = os.Remove(waitFile)
+			if errStr := m["error"]; errStr != "" {
+				oauthErr := codex.NewOAuthError(errStr, "", http.StatusBadRequest)
+				log.Error(codex.GetUserFriendlyMessage(oauthErr))
+				SetOAuthSessionError(state, "Bad Request")
+				return "", false
+			}
+			if m["state"] != state {
+				authErr := codex.NewAuthenticationError(codex.ErrInvalidState, fmt.Errorf("expected %s, got %s", state, m["state"]))
+				SetOAuthSessionError(state, "State code error")
+				log.Error(codex.GetUserFriendlyMessage(authErr))
+				return "", false
+			}
+			return m["code"], true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func matchesOAuthRecoveryTarget(target oauthRecoveryTarget, email, accountID, candidateFileName string) bool {
