@@ -60,6 +60,15 @@ func TestClaudeWebUILoginFromAnotherDeviceUsesHostedCodePage(t *testing.T) {
 	}
 }
 
+func TestBrowserOnThisMachineTrustsADashboardServer(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/?is_webui=true&browser=remote", nil)
+	c.Request.RemoteAddr = "127.0.0.1:52000"
+	if browserOnThisMachine(c) {
+		t.Error("browser=remote from this machine should read as a browser elsewhere")
+	}
+}
+
 func TestBrowserOnThisMachine(t *testing.T) {
 	for addr, want := range map[string]bool{
 		"127.0.0.1:52000":  true,

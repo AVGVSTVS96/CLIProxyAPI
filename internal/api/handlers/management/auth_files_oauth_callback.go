@@ -48,9 +48,14 @@ func isWebUIRequest(c *gin.Context) bool {
 
 // browserOnThisMachine reports whether the request comes from a browser on
 // this machine, the only browser a localhost OAuth redirect brings back here.
+// A dashboard server that calls on a browser's behalf says where the browser
+// is with browser=remote, since its own address is always this machine's.
 func browserOnThisMachine(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return true
+	}
+	if c.Query("browser") == "remote" {
+		return false
 	}
 	host, _, errSplit := net.SplitHostPort(c.Request.RemoteAddr)
 	if errSplit != nil {
