@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -40,7 +41,8 @@ type cachedFile struct {
 }
 
 // Collector reads one machine's logs. Each Collect re-parses only files whose signature
-// changed since the last one, keeping what deduplication needs from each file in memory.
+// changed since the last one, keeping what deduplication needs from each file in memory,
+// and recomputes only the records those files can affect.
 type Collector struct {
 	opts    Sources
 	sources []source
@@ -49,10 +51,15 @@ type Collector struct {
 	mu    sync.Mutex
 	files map[string]cachedFile
 	grok  *grokCache
+
+	byID, bySession map[string][]string
+	t3              map[string]t3Metadata
+	policy          *PricingPolicy
 }
 
-// Collection is one pass's result: every current record, priced, sorted by time and id,
-// and the ids proved to be replays that earlier passes may have reported.
+// Collection is one pass's result: the records that may have changed since the previous
+// pass (every record on the first), priced, sorted by time and id, and the ids proved to
+// be replays that earlier passes may have reported.
 type Collection struct {
 	Events       []Event
 	RetractedIDs []string
@@ -116,7 +123,8 @@ func NewCollector(opts Sources, pricing *Pricing) *Collector {
 	if dataHome == "" {
 		dataHome = filepath.Join(home, ".local", "share")
 	}
-	c := &Collector{opts: opts, pricing: pricing, files: map[string]cachedFile{}, grok: newGrokCache()}
+	c := &Collector{opts: opts, pricing: pricing, files: map[string]cachedFile{}, grok: newGrokCache(),
+		byID: map[string][]string{}, bySession: map[string][]string{}}
 	seen := map[string]bool{}
 	add := func(harness, root string) {
 		expanded := expand(root)
@@ -240,10 +248,94 @@ func parseFile(f logFile) *parsedFile {
 	return parsed
 }
 
-// scan lists every log and returns its parsed contents in token-tracker's order,
-// parsing only what changed.
-func (c *Collector) scan() ([]*parsedFile, []string) {
-	var warnings []string
+type keyedFile struct {
+	key    string
+	parsed *parsedFile
+}
+
+// links calls id and session for everything that ties a file's records to other files':
+// deduplication compares records by id, and the replay filters, titles and T3 metadata
+// work within a session and its parent sessions.
+func links(p *parsedFile, id, session func(string)) {
+	if p.SessionID != "" {
+		session(p.SessionID)
+	}
+	if p.ParentID != "" {
+		session(p.ParentID)
+	}
+	for _, entry := range p.Events {
+		id(entry.Event.ID)
+		if entry.LegacyEventID != "" {
+			id(entry.LegacyEventID)
+		}
+		session(entry.Event.SessionID)
+	}
+	for _, retracted := range p.RetractedIDs {
+		id(retracted)
+	}
+	for _, request := range p.EmptyClaudeRequests {
+		session(request.SessionID)
+	}
+}
+
+func (c *Collector) index(key string, p *parsedFile, add bool) {
+	update := func(m map[string][]string) func(string) {
+		return func(link string) {
+			keys := m[link]
+			if add {
+				if !slices.Contains(keys, key) {
+					m[link] = append(keys, key)
+				}
+				return
+			}
+			if keys = slices.DeleteFunc(keys, func(k string) bool { return k == key }); len(keys) == 0 {
+				delete(m, link)
+			} else {
+				m[link] = keys
+			}
+		}
+	}
+	links(p, update(c.byID), update(c.bySession))
+}
+
+// affected returns the files whose records can change with the given files' contents or
+// with the given sessions' T3 metadata: every file sharing an id or session with them, and
+// with those files, until no new file is reached.
+func (c *Collector) affected(changed []*parsedFile, sessions []string) map[string]bool {
+	picked := map[string]bool{}
+	var queue []string
+	visit := func(m map[string][]string, seen map[string]bool) func(string) {
+		return func(link string) {
+			if seen[link] {
+				return
+			}
+			seen[link] = true
+			for _, key := range m[link] {
+				if !picked[key] {
+					picked[key] = true
+					queue = append(queue, key)
+				}
+			}
+		}
+	}
+	id, session := visit(c.byID, map[string]bool{}), visit(c.bySession, map[string]bool{})
+	for _, p := range changed {
+		links(p, id, session)
+	}
+	for _, s := range sessions {
+		session(s)
+	}
+	for len(queue) > 0 {
+		key := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		links(c.files[key].parsed, id, session)
+	}
+	return picked
+}
+
+// scan lists every log and returns its parsed contents in token-tracker's order, parsing
+// only what changed, with the old and new contents of every file that changed.
+func (c *Collector) scan() (files []keyedFile, changed []*parsedFile, warnings []string) {
 	var order []logFile
 	for _, s := range c.sources {
 		if s.harness == "grok" {
@@ -300,24 +392,37 @@ func (c *Collector) scan() ([]*parsedFile, []string) {
 	close(jobs)
 	wg.Wait()
 	next := make(map[string]cachedFile, len(order))
-	files := make([]*parsedFile, 0, len(order))
+	files = make([]keyedFile, 0, len(order))
 	for i, f := range order {
 		if parsed[i] == nil {
 			continue
 		}
-		next[f.harness+":"+f.path] = cachedFile{f.signature, parsed[i]}
-		files = append(files, parsed[i])
+		key := f.harness + ":" + f.path
+		next[key] = cachedFile{f.signature, parsed[i]}
+		files = append(files, keyedFile{key, parsed[i]})
+	}
+	for key, old := range previous {
+		if now, ok := next[key]; !ok || now.parsed != old.parsed {
+			c.index(key, old.parsed, false)
+			changed = append(changed, old.parsed)
+		}
+	}
+	for key, now := range next {
+		if old, ok := previous[key]; !ok || now.parsed != old.parsed {
+			c.index(key, now.parsed, true)
+			changed = append(changed, now.parsed)
+		}
 	}
 	c.mu.Lock()
 	c.files = next
 	c.mu.Unlock()
-	return files, warnings
+	return files, changed, warnings
 }
 
 // Collect reads the machine's logs and returns its records as token-tracker's
-// collectUsage does.
+// collectUsage does, limited after the first pass to the records that may have changed.
 func (c *Collector) Collect(ctx context.Context) Collection {
-	files, warnings := c.scan()
+	logs, changed, warnings := c.scan()
 	var grokSources []string
 	for _, s := range c.sources {
 		if s.harness == "grok" {
@@ -325,8 +430,39 @@ func (c *Collector) Collect(ctx context.Context) Collection {
 		}
 	}
 	grokFiles, grokWarnings := c.grok.collect(grokSources)
-	files = append(files, grokFiles...)
 	warnings = append(warnings, grokWarnings...)
+	changed = append(changed, grokFiles...)
+
+	t3Next := readT3Metadata(ctx, c.opts.T3Data, c.opts.T3URL)
+	var t3Changed []string
+	for key, metadata := range t3Next {
+		if old, ok := c.t3[key]; !ok || !reflect.DeepEqual(old, metadata) {
+			_, session, _ := strings.Cut(key, ":")
+			t3Changed = append(t3Changed, session)
+		}
+	}
+	for key := range c.t3 {
+		if _, ok := t3Next[key]; !ok {
+			_, session, _ := strings.Cut(key, ":")
+			t3Changed = append(t3Changed, session)
+		}
+	}
+	policy := c.pricing.Policy()
+	full := c.t3 == nil || policy != c.policy
+	c.t3, c.policy = t3Next, policy
+	files := make([]*parsedFile, 0, len(logs)+len(grokFiles))
+	if full {
+		for _, f := range logs {
+			files = append(files, f.parsed)
+		}
+	} else if picked := c.affected(changed, t3Changed); len(picked) > 0 {
+		for _, f := range logs {
+			if picked[f.key] {
+				files = append(files, f.parsed)
+			}
+		}
+	}
+	files = append(files, grokFiles...)
 
 	titles := map[string]string{}
 	for _, file := range files {
@@ -374,7 +510,7 @@ func (c *Collector) Collect(ctx context.Context) Collection {
 	isRemote := func(r *string) bool { return r != nil && !strings.HasPrefix(*r, "local:") }
 	type sessionKey struct{ harness, session string }
 	t3 := map[sessionKey]t3Metadata{}
-	for key, metadata := range readT3Metadata(ctx, c.opts.T3Data, c.opts.T3URL) {
+	for key, metadata := range t3Next {
 		harness, session, _ := strings.Cut(key, ":")
 		t3[sessionKey{harness, session}] = metadata
 	}
@@ -395,7 +531,6 @@ func (c *Collector) Collect(ctx context.Context) Collection {
 		}
 	}
 
-	policy := c.pricing.Policy()
 	unknown := map[string]bool{}
 	events := make([]Event, 0, len(entries))
 	for _, entry := range entries {
