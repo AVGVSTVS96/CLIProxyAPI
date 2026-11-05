@@ -2,7 +2,10 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -177,5 +180,35 @@ func TestProxyPreservesUnclassifiedUsage(t *testing.T) {
 	priced, _ := NewPricing(t.TempDir()).Policy().Reprice(e)
 	if priced.CostKnown {
 		t.Fatal("unclassified tokens presented as known zero cost")
+	}
+}
+
+func TestProxyReceiptsWithoutStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.ndjson")
+	previous := shared.Swap(nil)
+	defer shared.Store(previous)
+	SetReceipts(path)
+	defer SetReceipts("")
+	manager := coreusage.NewManager(1)
+	manager.Register(proxySink{})
+	iterations := []coreusage.IterationUsage{{Type: "message", Model: "claude-sonnet-4-5"}, {Type: "advisor_message", Model: "claude-opus-4-5", InputTokens: coreusage.Int64Ptr(30), OutputTokens: coreusage.Int64Ptr(5)}}
+	record := coreusage.Record{RequestID: "run", ResponseID: "msg_1", SessionID: "s", Provider: "claude", Model: "claude-sonnet-4-5",
+		RequestedAt: time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC), ResponseHeaders: http.Header{"Request-Id": {"req_1"}},
+		Detail: coreusage.Detail{InputTokens: 100, OutputTokens: 20, Iterations: &iterations}}
+	second := coreusage.Record{RequestID: "second", Provider: "codex", Model: "gpt-5", RequestedAt: record.RequestedAt, Detail: coreusage.Detail{InputTokens: 7}}
+	manager.Publish(context.Background(), record)
+	manager.Publish(context.Background(), second)
+	manager.Stop()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []byte
+	for _, e := range append(proxyEvents(context.Background(), record), proxyEvent(context.Background(), second)) {
+		line, _ := json.Marshal(e)
+		want = append(append(want, line...), '\n')
+	}
+	if string(data) != string(want) {
+		t.Fatalf("receipts:\n%s\nwant:\n%s", data, want)
 	}
 }

@@ -165,6 +165,8 @@ access:
 # the per-session account log and Claude plans come from routing.pool's state-dir.
 # usage:
 #   state-dir: ""         # store, device-id and pricing-state.json; empty turns usage off
+#   receipts: ""          # file each proxied request appends its records to, one per line,
+#                         # for a usage service outside the proxy; empty writes none
 #   device-id: ""         # this machine's id in the store; empty creates state-dir/device-id
 #   device-label: ""      # name shown for this machine; empty uses the hostname
 #   t3-data-dir: ""       # T3 Code data for thread titles and links (default ~/.t3/userdata)

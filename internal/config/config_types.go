@@ -531,6 +531,9 @@ func (c PoolConfig) AgentSDKFactor() float64 {
 type UsageConfig struct {
 	// StateDir holds the usage store, parse cache and pricing-state.json. Empty disables usage.
 	StateDir string `yaml:"state-dir,omitempty" json:"state-dir,omitempty"`
+	// Receipts is a file each proxied request appends its usage records to, one per line,
+	// for a usage service outside the proxy. Empty writes none.
+	Receipts string `yaml:"receipts,omitempty" json:"receipts,omitempty"`
 	// DeviceID names this machine in the store. Empty reads or creates StateDir/device-id.
 	DeviceID string `yaml:"device-id,omitempty" json:"device-id,omitempty"`
 	// DeviceLabel is the name shown for this machine. Empty uses the hostname.

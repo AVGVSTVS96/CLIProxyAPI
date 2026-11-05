@@ -2,8 +2,11 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/entrypoint"
@@ -16,15 +19,55 @@ func init() { coreusage.RegisterNamedPlugin("dashboard", proxySink{}) }
 
 type proxySink struct{}
 
+var receipts atomic.Pointer[string]
+
+// SetReceipts makes every proxied request append its records to path, one per line; empty stops it.
+func SetReceipts(path string) {
+	path = expandHome(strings.TrimSpace(path))
+	receipts.Store(&path)
+}
+
 func (proxySink) HandleUsage(ctx context.Context, record coreusage.Record) {
 	store := Shared()
-	if store == nil {
+	var path string
+	if p := receipts.Load(); p != nil {
+		path = *p
+	}
+	if store == nil && path == "" {
 		return
 	}
 	events := proxyEvents(ctx, record)
-	if _, err := store.Apply(Batch{Device: Device{ID: store.localID, Label: store.label}, Events: events}, false); err != nil {
-		log.WithError(err).Error("usage: could not persist proxy request")
+	if store != nil {
+		if _, err := store.Apply(Batch{Device: Device{ID: store.localID, Label: store.label}, Events: events}, false); err != nil {
+			log.WithError(err).Error("usage: could not persist proxy request")
+		}
 	}
+	if path != "" {
+		if err := appendReceipts(path, events); err != nil {
+			log.WithError(err).Error("usage: could not write proxy receipt")
+		}
+	}
+}
+
+// appendReceipts writes events in one append, so readers never see half a request.
+func appendReceipts(path string, events []Event) error {
+	var lines []byte
+	for _, event := range events {
+		data, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		lines = append(append(lines, data...), '\n')
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(lines)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 func proxyEvents(ctx context.Context, record coreusage.Record) []Event {

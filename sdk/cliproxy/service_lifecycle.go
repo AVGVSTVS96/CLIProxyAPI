@@ -108,6 +108,9 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 		coreauth.StartPoolSampler(ctx, s.coreManager)
 	}
+	if cfg != nil {
+		agentusage.SetReceipts(cfg.Usage.Receipts)
+	}
 	if cfg != nil && cfg.Usage.StateDir != "" {
 		if local, errUsage := agentusage.Open(cfg.Usage); errUsage != nil {
 			log.Errorf("usage: %v", errUsage)
