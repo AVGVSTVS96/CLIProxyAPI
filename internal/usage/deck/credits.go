@@ -93,16 +93,36 @@ type creditsCache struct {
 	hash    string
 	loading bool
 	again   bool
+	stale   bool
 }
 
 func (d *Deck) cachedCredits() (CreditsView, error) {
-	d.credits.mu.Lock()
-	view, err := d.credits.view, d.credits.err
-	d.credits.mu.Unlock()
+	c := &d.credits
+	c.mu.Lock()
+	stale := c.view == nil || c.stale
+	c.mu.Unlock()
+	if stale {
+		d.refreshCredits()
+	}
+	c.mu.Lock()
+	view, err := c.view, c.err
+	c.mu.Unlock()
 	if view == nil {
 		return d.Credits()
 	}
 	return *view, err
+}
+
+// creditsChanged refreshes the view while a listener is open, and otherwise leaves it
+// for the next request, since each pass rebuilds the store's whole event snapshot.
+func (d *Deck) creditsChanged() {
+	if d.stream.size() > 0 {
+		go d.refreshCredits()
+		return
+	}
+	d.credits.mu.Lock()
+	d.credits.stale = true
+	d.credits.mu.Unlock()
 }
 
 // refreshCredits recomputes the view, one pass at a time, and tells listeners when it changed.
@@ -117,7 +137,7 @@ func (d *Deck) refreshCredits() {
 	}
 	c.loading = true
 	for {
-		c.again = false
+		c.again, c.stale = false, false
 		c.mu.Unlock()
 		view, err := d.Credits()
 		hash := fmt.Sprint(string(encode(view)), err)

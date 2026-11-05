@@ -198,7 +198,7 @@ func New(opts Options) *Deck {
 	if d.paths.stateDir != "" {
 		go d.watch(d.poolChanged, watchSpec{dir: d.paths.stateDir, depth: 1, match: func(rel string) bool {
 			if rel == "credits.json" {
-				go d.refreshCredits()
+				d.creditsChanged()
 			}
 			if rel == "usage-history.ndjson" || rel == "attribution.ndjson" {
 				logsChanged()
@@ -449,12 +449,12 @@ func (d *Deck) resetViews() {
 	d.views = map[string]*UsageView{}
 	d.mu.Unlock()
 	d.stream.stale("usage")
-	go d.refreshCredits()
+	d.creditsChanged()
 }
 
 // usageChanged reloads the ranges in view after the store, limits or plans change.
 func (d *Deck) usageChanged() {
-	go d.refreshCredits()
+	d.creditsChanged()
 	d.mu.Lock()
 	var due []Range
 	for _, r := range Ranges {
