@@ -807,6 +807,12 @@ func classifyClaudeUpstreamError(statusCode int, headers http.Header, body []byt
 }
 
 func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) error {
+	if statusCode == http.StatusBadRequest && claudeBodyRequiresIdentityVerification(body) {
+		// Anthropic sends this account-level refusal as a 400 invalid_request_error;
+		// as a 403 the pool fails over, cools the account and rebinds its sessions.
+		forbidden, _ := sjson.SetBytes(body, "error.type", "permission_error")
+		return statusErr{code: http.StatusForbidden, msg: string(forbidden)}
+	}
 	var retryAfter *time.Duration
 	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
 		retryAfter = helps.ParseClaudeRateLimitResetForError(headers, body, time.Now())
@@ -835,6 +841,10 @@ func claudeBodyIndicatesFastModeCredits(body []byte) bool {
 	return strings.Contains(message, "fast request rejected") ||
 		(strings.Contains(message, "fast") &&
 			(strings.Contains(message, "usage credits") || strings.Contains(message, "credits are required")))
+}
+
+func claudeBodyRequiresIdentityVerification(body []byte) bool {
+	return strings.Contains(strings.ToLower(gjson.GetBytes(body, "error.message").String()), "identity verification is required")
 }
 
 // claudeRequestedBetas collects every beta the caller asked for, from the
