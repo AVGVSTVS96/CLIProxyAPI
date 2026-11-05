@@ -20,9 +20,6 @@ import (
 )
 
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	if err := requireClaudeAPIKey(auth, opts); err != nil {
-		return cliproxyexecutor.Response{}, err
-	}
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"

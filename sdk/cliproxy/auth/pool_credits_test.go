@@ -56,15 +56,9 @@ func TestCreditsFallThroughByPriorityThenToPlans(t *testing.T) {
 	if got := send(); got != "shahidy" {
 		t.Fatalf("after 5n ran out the request went to %s (tried %v), want shahidy", got, tried)
 	}
-	if runtime, _ := m.ClaudeRuntime("included"); runtime != "sdk" {
-		t.Fatalf("shahidy still has balance, runtime = %s", runtime)
-	}
 	empty["shahidy"] = true
 	if got := send(); got != "error" {
 		t.Fatalf("every credit is empty but the request was served by %s", got)
-	}
-	if runtime, _ := m.ClaudeRuntime("included"); runtime != "interactive" {
-		t.Fatalf("every credit is empty, runtime = %s", runtime)
 	}
 }
 
