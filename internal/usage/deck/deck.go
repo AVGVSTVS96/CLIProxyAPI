@@ -177,7 +177,7 @@ func New(opts Options) *Deck {
 	go d.warm(Week)
 	go d.refreshCredits()
 
-	usageChanged := burst(ctx, 2*time.Second, d.usageChanged)
+	usageChanged := burst(ctx, 15*time.Second, d.usageChanged)
 	cancelStore := opts.Store.Subscribe(usageChanged)
 	go func() { <-ctx.Done(); cancelStore() }()
 	if exists(d.hexCommand()) {
