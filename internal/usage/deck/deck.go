@@ -38,6 +38,7 @@ type Store interface {
 
 // Options are what the views read.
 type Options struct {
+	// Store feeds the usage, sessions and credits views; without one the deck serves the pool only.
 	Store Store
 	// Pool ranks the Claude accounts, under proposed settings when preview is non-nil.
 	Pool func(preview *config.PoolConfig) coreauth.PoolSnapshot
@@ -174,12 +175,18 @@ func New(opts Options) *Deck {
 	d.refreshNames()
 	d.refreshPool()
 	d.publish()
-	go d.warm(Week)
-	go d.refreshCredits()
-
 	usageChanged := burst(ctx, 15*time.Second, d.usageChanged)
-	cancelStore := opts.Store.Subscribe(usageChanged)
-	go func() { <-ctx.Done(); cancelStore() }()
+	if opts.Store != nil {
+		go d.warm(Week)
+		go d.refreshCredits()
+		cancelStore := opts.Store.Subscribe(usageChanged)
+		go func() { <-ctx.Done(); cancelStore() }()
+		go d.every(freshFor, func() {
+			if d.stream.size() > 0 {
+				usageChanged()
+			}
+		})
+	}
 	if exists(d.hexCommand()) {
 		go d.follow([]string{d.hexCommand(), "watch"}, burst(ctx, 250*time.Millisecond, func() {
 			d.refreshNames()
@@ -209,11 +216,6 @@ func New(opts Options) *Deck {
 		}})
 	}
 	go d.every(time.Minute, d.poolChanged)
-	go d.every(freshFor, func() {
-		if d.stream.size() > 0 {
-			usageChanged()
-		}
-	})
 	go d.every(heartbeat, d.stream.heartbeat)
 	return d
 }
@@ -448,12 +450,17 @@ func (d *Deck) resetViews() {
 	d.mu.Lock()
 	d.views = map[string]*UsageView{}
 	d.mu.Unlock()
-	d.stream.stale("usage")
-	d.creditsChanged()
+	if d.opts.Store != nil {
+		d.stream.stale("usage")
+		d.creditsChanged()
+	}
 }
 
 // usageChanged reloads the ranges in view after the store, limits or plans change.
 func (d *Deck) usageChanged() {
+	if d.opts.Store == nil {
+		return
+	}
 	d.creditsChanged()
 	d.mu.Lock()
 	var due []Range
@@ -718,7 +725,8 @@ func (d *Deck) SetPolicy(proposed Policy, revision string, save bool, authorizat
 	return PolicyResult{}, fmt.Errorf("The account pool refused the policy (%d).", response.Code)
 }
 
-// Register serves the views under group: usage, accounts, accounts/policy and events.
+// Register serves the views under group: accounts, accounts/policy and events, and with
+// a store usage, sessions and credits.
 func (d *Deck) Register(group *gin.RouterGroup) {
 	reply := func(c *gin.Context, value any, err error) {
 		c.Header("Cache-Control", "no-store")
@@ -728,17 +736,19 @@ func (d *Deck) Register(group *gin.RouterGroup) {
 		}
 		c.JSON(http.StatusOK, value)
 	}
-	group.GET("/usage", func(c *gin.Context) {
-		view, err := d.Usage(ParseQuery(c.Request.URL.Query()))
-		reply(c, view, err)
-	})
-	group.GET("/sessions", func(c *gin.Context) {
-		reply(c, d.SessionUsage(pick(c.Query("range"), Ranges, Week)), nil)
-	})
-	group.GET("/credits", func(c *gin.Context) {
-		view, err := d.cachedCredits()
-		reply(c, view, err)
-	})
+	if d.opts.Store != nil {
+		group.GET("/usage", func(c *gin.Context) {
+			view, err := d.Usage(ParseQuery(c.Request.URL.Query()))
+			reply(c, view, err)
+		})
+		group.GET("/sessions", func(c *gin.Context) {
+			reply(c, d.SessionUsage(pick(c.Query("range"), Ranges, Week)), nil)
+		})
+		group.GET("/credits", func(c *gin.Context) {
+			view, err := d.cachedCredits()
+			reply(c, view, err)
+		})
+	}
 	group.GET("/accounts", func(c *gin.Context) {
 		view, err := d.Accounts()
 		reply(c, view, err)

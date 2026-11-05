@@ -161,3 +161,58 @@ func TestUsageDeckRoutes(t *testing.T) {
 		t.Fatalf("saved pool = %v", next)
 	}
 }
+
+// TestUsageDeckWithoutStore serves the pool's accounts and live keys when usage lives
+// outside the proxy, and leaves the usage views to that service.
+func TestUsageDeckWithoutStore(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	dir := t.TempDir()
+	cfg := &proxyconfig.Config{SDKConfig: sdkconfig.SDKConfig{APIKeys: []string{"test-key"}}}
+	cfg.Usage = proxyconfig.UsageConfig{Timezone: "UTC", Hex: filepath.Join(dir, "hex"), Claude: filepath.Join(dir, "claude")}
+	cfg.Routing.Pool.StateDir = filepath.Join(dir, "state")
+	server := newTestServerWithConfig(t, cfg)
+	t.Cleanup(func() { _ = server.Stop(t.Context()) })
+
+	get := func(path string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		recorder := httptest.NewRecorder()
+		server.engine.ServeHTTP(recorder, req)
+		return recorder.Code
+	}
+	if got := get("/v8/management/deck/accounts"); got != http.StatusOK {
+		t.Fatalf("accounts answered %d", got)
+	}
+	for _, path := range []string{"/v8/management/deck/usage", "/v8/management/deck/sessions", "/v8/management/deck/credits"} {
+		if got := get(path); got != http.StatusNotFound {
+			t.Fatalf("%s answered %d", path, got)
+		}
+	}
+
+	live := httptest.NewServer(server.engine)
+	t.Cleanup(live.Close)
+	req, _ := http.NewRequest(http.MethodGet, live.URL+"/v8/management/deck/events", nil)
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	response, err := live.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	frames := bufio.NewReader(response.Body)
+	for {
+		line, err := frames.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			var snapshot map[string]any
+			if err := json.Unmarshal([]byte(data), &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if pool, _ := snapshot["live"].(map[string]any)["pool"].(map[string]any); snapshot["type"] != "snapshot" || pool == nil {
+				t.Fatalf("first frame = %v", snapshot)
+			}
+			return
+		}
+	}
+}

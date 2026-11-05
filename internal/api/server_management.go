@@ -29,7 +29,7 @@ func (s *Server) registerManagementRoutes() {
 	s.cfgMu.RLock()
 	cfg := *s.cfg
 	s.cfgMu.RUnlock()
-	if s.usageStore != nil {
+	if s.usageStore != nil || cfg.Routing.Pool.StateDir != "" {
 		s.deck = deck.New(deck.Options{
 			Store: s.usageStore,
 			Pool: func(preview *config.PoolConfig) coreauth.PoolSnapshot {
