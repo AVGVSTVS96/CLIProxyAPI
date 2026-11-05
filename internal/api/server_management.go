@@ -368,5 +368,6 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
+	c.Header("Cache-Control", "no-cache")
 	c.File(filePath)
 }
