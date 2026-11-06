@@ -9,7 +9,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// The live grants: 101 is spent, 5n expires first and so has the higher priority, then shahidy.
+// Free credit runs by priority: an empty grant is skipped, then the one expiring first, then the next.
 func TestCreditsFallThroughByPriorityThenToPlans(t *testing.T) {
 	previous := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)
@@ -24,14 +24,14 @@ func TestCreditsFallThroughByPriorityThenToPlans(t *testing.T) {
 	}
 	m := NewManager(nil, nil, nil)
 	reg := registry.GetGlobalRegistry()
-	for _, a := range []*Auth{credit("101", "100"), credit("5n", "300"), credit("shahidy", "200")} {
+	for _, a := range []*Auth{credit("spent", "100"), credit("first", "300"), credit("second", "200")} {
 		reg.RegisterClient(a.ID, "claude", []*registry.ModelInfo{{ID: "claude-opus-5-5"}})
 		t.Cleanup(func() { reg.UnregisterClient(a.ID) })
 		if _, err := m.Register(context.Background(), a); err != nil {
 			t.Fatal(err)
 		}
 	}
-	empty := map[string]bool{"101": true}
+	empty := map[string]bool{"spent": true}
 	var tried []string
 	m.RegisterExecutor(&mockCustomErrorExecutor{identifier: "claude", executeFn: func(_ context.Context, a *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 		tried = append(tried, a.ID)
@@ -49,14 +49,14 @@ func TestCreditsFallThroughByPriorityThenToPlans(t *testing.T) {
 		return string(resp.Payload)
 	}
 
-	if got := send(); got != "5n" {
-		t.Fatalf("first spend went to %s (tried %v), want 5n", got, tried)
+	if got := send(); got != "first" {
+		t.Fatalf("first spend went to %s (tried %v), want first", got, tried)
 	}
-	empty["5n"] = true
-	if got := send(); got != "shahidy" {
-		t.Fatalf("after 5n ran out the request went to %s (tried %v), want shahidy", got, tried)
+	empty["first"] = true
+	if got := send(); got != "second" {
+		t.Fatalf("after first ran out the request went to %s (tried %v), want second", got, tried)
 	}
-	empty["shahidy"] = true
+	empty["second"] = true
 	if got := send(); got != "error" {
 		t.Fatalf("every credit is empty but the request was served by %s", got)
 	}

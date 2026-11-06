@@ -29,6 +29,16 @@ import (
 // (pool_resets.go), and records which account each Claude Code session runs on.
 // Agent SDK and `claude -p` sessions drain the five-hour limit faster than interactive
 // ones, so they weigh routing.pool.agent-sdk-five-hour-factor sessions each there.
+//
+// Spend order, cheapest first: plans, then free credit, then paid extra usage.
+//   - Plans: the OAuth accounts above, for any bare model.
+//   - Free credit: Claude API keys under the "included" prefix, holding credit that costs
+//     nothing, like the monthly API credit Max and Ultra include, in an organization with no
+//     card. Anthropic counts it for the API, the Agent SDK and `claude -p`, not interactive
+//     Claude Code, so only a caller asking for "included/<model>" reaches it; a bare model never
+//     does. It needs no extra-usage switch.
+//   - Paid extra usage: Anthropic bills it on a plan account past its limits, and only where
+//     the account owner turned extra usage on. Nothing here turns it on.
 
 const (
 	poolStaleAfter    = 20 * time.Minute
