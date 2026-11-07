@@ -20,6 +20,18 @@ func TestMergeExistingAuthMetadataPreservesDisabledState(t *testing.T) {
 	}
 }
 
+func TestMergeExistingAuthMetadataDropsOldSignInEnd(t *testing.T) {
+	target := &Auth{Metadata: map[string]any{"type": "claude"}}
+	MergeExistingAuthMetadata(target, map[string]any{"refresh_expired": "2026-11-11T16:08:10-08:00", "priority": 3})
+
+	if _, kept := target.Metadata["refresh_expired"]; kept {
+		t.Fatalf("a new sign-in kept the old sign-in's end: %v", target.Metadata["refresh_expired"])
+	}
+	if target.Metadata["priority"] != 3 {
+		t.Fatalf("priority = %v, want 3", target.Metadata["priority"])
+	}
+}
+
 func TestMergeExistingAuthMetadataKeepsExplicitDisabledState(t *testing.T) {
 	target := &Auth{Metadata: map[string]any{"disabled": false}}
 	MergeExistingAuthMetadata(target, map[string]any{"disabled": true})

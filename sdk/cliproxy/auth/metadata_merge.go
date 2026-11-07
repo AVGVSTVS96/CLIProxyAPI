@@ -13,7 +13,7 @@ import (
 func IsAuthTokenPayloadKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "access_token", "refresh_token", "id_token", "session_id",
-		"expired", "last_refresh", "expires_in", "timestamp",
+		"expired", "refresh_expired", "last_refresh", "expires_in", "timestamp",
 		"token_type", "user_code", "verification_uri", "verification_uri_complete":
 		return true
 	default:
