@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -40,6 +41,11 @@ var (
 	claudeDeviceProfileCacheCleanupOnce sync.Once
 
 	ClaudeDeviceProfileBeforeCandidateStore func(ClaudeDeviceProfile)
+
+	// newestClaudeCodeProfile is the newest Claude Code release seen on the wire.
+	// Anthropic gates new models on the claimed version, so the CLI identity
+	// follows the clients behind the proxy instead of a version frozen in code.
+	newestClaudeCodeProfile atomic.Pointer[ClaudeDeviceProfile]
 )
 
 type claudeDeviceProfileKVClient interface {
@@ -115,6 +121,42 @@ func ResetClaudeDeviceProfileCache() {
 	claudeDeviceProfileCacheMu.Lock()
 	claudeDeviceProfileCache = make(map[string]claudeDeviceProfileCacheEntry)
 	claudeDeviceProfileCacheMu.Unlock()
+	newestClaudeCodeProfile.Store(nil)
+}
+
+// observeClaudeCodeRelease records the software tuple of a real Claude Code
+// request (any entrypoint) in the measured release line when it is newer than
+// every one seen before.
+func observeClaudeCodeRelease(headers http.Header, cfg *config.Config) {
+	userAgent := strings.TrimSpace(headerValue(headers, "User-Agent"))
+	version, ok := parseClaudeCLIVersion(userAgent)
+	floor, okFloor := claudeCLIVersionFloor(cfg)
+	if !ok || !okFloor || !plausibleClaudeCLIVersion(version, floor) ||
+		!claudeCodeNativeUserAgentPattern.MatchString(userAgent) ||
+		headerValue(headers, "X-App") != "cli" || !headerContainsClaudeCodeBeta(headers) {
+		return
+	}
+	packageVersion := strings.TrimSpace(headerValue(headers, "X-Stainless-Package-Version"))
+	runtimeVersion := strings.TrimSpace(headerValue(headers, "X-Stainless-Runtime-Version"))
+	if !claudePackageVersionPattern.MatchString(packageVersion) || !claudeRuntimeVersionPattern.MatchString(runtimeVersion) {
+		return
+	}
+	observed := &ClaudeDeviceProfile{
+		UserAgent:      fmt.Sprintf("claude-cli/%d.%d.%d (external, cli)", version.major, version.minor, version.patch),
+		PackageVersion: packageVersion,
+		RuntimeVersion: runtimeVersion,
+		version:        version,
+		hasVersion:     true,
+	}
+	for {
+		current := newestClaudeCodeProfile.Load()
+		if current != nil && version.Compare(current.version) <= 0 {
+			return
+		}
+		if newestClaudeCodeProfile.CompareAndSwap(current, observed) {
+			return
+		}
+	}
 }
 
 func MapStainlessOS() string {
@@ -149,7 +191,28 @@ func defaultClaudeDeviceProfile(cfg *config.Config) ClaudeDeviceProfile {
 		profile.version = version
 		profile.hasVersion = true
 	}
+	if newest := newestClaudeCodeProfile.Load(); newest != nil && strings.TrimSpace(hd.UserAgent) == "" &&
+		profile.hasVersion && newest.version.Compare(profile.version) > 0 && plausibleClaudeCLIVersion(newest.version, profile.version) {
+		profile.UserAgent = newest.UserAgent
+		profile.version = newest.version
+		if strings.TrimSpace(hd.PackageVersion) == "" {
+			profile.PackageVersion = newest.PackageVersion
+		}
+		if strings.TrimSpace(hd.RuntimeVersion) == "" {
+			profile.RuntimeVersion = newest.RuntimeVersion
+		}
+	}
 	return profile
+}
+
+// claudeCLIVersionFloor is the oldest Claude Code release whose own identity
+// may pass through: the configured or measured baseline, never a newer one seen.
+func claudeCLIVersionFloor(cfg *config.Config) (claudeCLIVersion, bool) {
+	userAgent := defaultClaudeFingerprintUserAgent
+	if cfg != nil && strings.TrimSpace(cfg.ClaudeHeaderDefaults.UserAgent) != "" {
+		userAgent = cfg.ClaudeHeaderDefaults.UserAgent
+	}
+	return parseClaudeCLIVersion(userAgent)
 }
 
 // mapStainlessOS maps runtime.GOOS to Stainless SDK OS names.

@@ -142,6 +142,7 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	if len(configs) > 0 {
 		cfg = configs[0]
 	}
+	observeClaudeCodeRelease(headers, cfg)
 	userAgent := headerValue(headers, "User-Agent")
 	entrypoint, agentSDKVersion := parseClaudeCodeUserAgentDetails(userAgent)
 	detection := ClaudeCodeRequestDetection{
@@ -662,7 +663,7 @@ func plausibleClaudeCodeUserAgent(userAgent string, cfg *config.Config) bool {
 		return false
 	}
 	candidate, okCandidate := parseClaudeCLIVersion(userAgent)
-	baseline, okBaseline := parseClaudeCLIVersion(defaultClaudeDeviceProfile(cfg).UserAgent)
+	baseline, okBaseline := claudeCLIVersionFloor(cfg)
 	// Patch releases (>= baseline.patch) within the release line preserve native passthrough.
 	return okCandidate && okBaseline && plausibleClaudeCLIVersion(candidate, baseline)
 }

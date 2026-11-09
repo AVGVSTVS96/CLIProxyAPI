@@ -451,3 +451,37 @@ func TestResolveClaudeDeviceProfileRequiredNonHomeKeepsLocalCache(t *testing.T) 
 		t.Fatalf("KV calls = get %d set %d setnx %d, want all zero", client.getCount, client.setCount, client.setNXCount)
 	}
 }
+
+func TestCloakedIdentityFollowsNewestClaudeCodeRelease(t *testing.T) {
+	ResetClaudeDeviceProfileCache()
+	t.Cleanup(ResetClaudeDeviceProfileCache)
+
+	seen := func(userAgent, packageVersion string) {
+		DetectClaudeCodeRequest(http.Header{
+			"User-Agent":                  {userAgent},
+			"X-App":                       {"cli"},
+			"Anthropic-Beta":              {"claude-code-20250219,oauth-2025-04-20"},
+			"X-Stainless-Package-Version": {packageVersion},
+			"X-Stainless-Runtime-Version": {"v24.3.0"},
+		}, []byte(`{}`), false)
+	}
+
+	seen("claude-cli/2.1.321 (external, hex)", "0.120.0")
+	seen("claude-cli/2.1.300 (external, cli)", "0.115.0")
+	seen("claude-cli/2.2.0 (external, cli)", "0.130.0")
+	seen("claude-cli/999.0.0 (external, cli)", "0.130.0")
+
+	profile := defaultClaudeDeviceProfile(nil)
+	if profile.UserAgent != "claude-cli/2.1.321 (external, cli)" || profile.PackageVersion != "0.120.0" || profile.RuntimeVersion != "v24.3.0" {
+		t.Fatalf("profile = %+v, want newest measured-line release 2.1.321 as a CLI identity", profile)
+	}
+	if got := DefaultClaudeVersion(nil); got != "2.1.321" {
+		t.Fatalf("DefaultClaudeVersion = %q, want 2.1.321", got)
+	}
+
+	configured := &config.Config{}
+	configured.ClaudeHeaderDefaults.UserAgent = "claude-cli/2.1.290 (external, cli)"
+	if got := defaultClaudeDeviceProfile(configured).UserAgent; got != "claude-cli/2.1.290 (external, cli)" {
+		t.Fatalf("configured User-Agent = %q, want the configured value", got)
+	}
+}
