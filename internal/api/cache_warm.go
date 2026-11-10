@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -48,6 +49,9 @@ type cacheWarmer struct {
 	after   time.Duration
 	mu      sync.Mutex
 	entries map[string]*cacheWarmEntry
+	// A session hex stops while it waits on its work reads "stopped", so the warmer
+	// remembers the last state each session reported for itself.
+	reported map[string]string
 }
 
 func newCacheWarmer(serve http.Handler) *cacheWarmer {
@@ -56,12 +60,55 @@ func newCacheWarmer(serve http.Handler) *cacheWarmer {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".claude")
 	}
-	return &cacheWarmer{
-		serve:   serve,
-		claude:  dir,
-		after:   cacheWarmAfter,
-		entries: map[string]*cacheWarmEntry{},
+	w := &cacheWarmer{
+		serve:    serve,
+		claude:   dir,
+		after:    cacheWarmAfter,
+		entries:  map[string]*cacheWarmEntry{},
+		reported: map[string]string{},
 	}
+	w.watchJobs()
+	return w
+}
+
+func (w *cacheWarmer) watchJobs() {
+	jobs := filepath.Join(w.claude, "jobs")
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil || watcher.Add(jobs) != nil {
+		log.Warnf("cache warm: cannot watch %s; only busy sessions stay warm", jobs)
+		return
+	}
+	dirs, _ := os.ReadDir(jobs)
+	for _, dir := range dirs {
+		if dir.IsDir() {
+			_ = watcher.Add(filepath.Join(jobs, dir.Name()))
+			w.note(filepath.Join(jobs, dir.Name(), "state.json"))
+		}
+	}
+	go func() {
+		for event := range watcher.Events {
+			if filepath.Dir(event.Name) == jobs {
+				if event.Has(fsnotify.Create) {
+					_ = watcher.Add(event.Name)
+					w.note(filepath.Join(event.Name, "state.json"))
+				}
+				continue
+			}
+			if filepath.Base(event.Name) == "state.json" {
+				w.note(event.Name)
+			}
+		}
+	}()
+}
+
+func (w *cacheWarmer) note(file string) {
+	job := claudeState(file)
+	if job.SessionID == "" || job.State == "" || job.State == "stopped" {
+		return
+	}
+	w.mu.Lock()
+	w.reported[job.SessionID] = job.State
+	w.mu.Unlock()
 }
 
 func (w *cacheWarmer) record(c *gin.Context) {
@@ -194,11 +241,8 @@ func (w *cacheWarmer) send(header http.Header, body []byte) (read, written int64
 }
 
 func (w *cacheWarmer) working(session string) bool {
-	if len(session) >= 8 {
-		job := claudeState(filepath.Join(w.claude, "jobs", session[:8], "state.json"))
-		if job.SessionID == session && job.State == "working" {
-			return true
-		}
+	if w.reported[session] == "working" {
+		return true
 	}
 	files, _ := filepath.Glob(filepath.Join(w.claude, "sessions", "*.json"))
 	for _, file := range files {

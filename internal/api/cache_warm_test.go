@@ -144,3 +144,34 @@ func TestCacheWarmLetsBlockedJobCool(t *testing.T) {
 		t.Fatalf("a session waiting on its owner should get no touch, got %d requests", n)
 	}
 }
+
+func TestCacheWarmKeepsWorkingSessionWarmAfterItIsStopped(t *testing.T) {
+	engine, upstream := newCacheWarmTest(t, "idle", "working")
+	stopped := `{"sessionId":"s1-session","state":"stopped"}`
+	file := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "jobs", "s1-sessi", "state.json")
+	if err := os.WriteFile(file, []byte(stopped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sendCacheWarmTest(engine, "")
+	time.Sleep(80 * time.Millisecond)
+
+	if n := len(upstream.seen()); n < 2 {
+		t.Fatalf("a session stopped while working should stay warm, got %d requests", n)
+	}
+}
+
+func TestCacheWarmSeesAJobThatTurnsBlocked(t *testing.T) {
+	engine, upstream := newCacheWarmTest(t, "idle", "working")
+	blocked := `{"sessionId":"s1-session","state":"blocked"}`
+	file := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "jobs", "s1-sessi", "state.json")
+	if err := os.WriteFile(file, []byte(blocked), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	sendCacheWarmTest(engine, "")
+	time.Sleep(80 * time.Millisecond)
+
+	if n := len(upstream.seen()); n != 1 {
+		t.Fatalf("a session that turned to waiting on its owner should cool, got %d requests", n)
+	}
+}
