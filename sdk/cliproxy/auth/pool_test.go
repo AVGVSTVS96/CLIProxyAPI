@@ -65,7 +65,7 @@ func TestQuotaSelectorSpendsTheWeekThatRunsOutSoonest(t *testing.T) {
 func TestQuotaSelectorPrefersAnAccountHoldingAReset(t *testing.T) {
 	resetPool(t)
 	expires := time.Now().Add(24 * time.Hour).UnixMilli()
-	claudePool.account("holder").resets = []PoolReset{{Kind: "weekly", Left: 1, ExpiresAt: &expires}}
+	claudePool.account("holder").resets = []PoolReset{{Kind: "weekly", Left: 1, ExpiresAt: &expires, Weekly: true}}
 	if got := pickQuota(t, poolAuth("soon", 10, 40, 10*time.Hour), poolAuth("holder", 10, 40, 120*time.Hour)); got != "holder" {
 		t.Fatalf("picked %s, want holder", got)
 	}

@@ -235,3 +235,80 @@ func TestNoUsageReadWhileBackingOff(t *testing.T) {
 		t.Fatalf("requests = %d, want none while the account backs off a 429", api.requests)
 	}
 }
+
+func holdFableReset(id string, fableUsed float64) {
+	expires := time.Now().Add(120 * 24 * time.Hour).UnixMilli()
+	claudePool.account(id).resets = []PoolReset{{ID: "launch-fable", Kind: "fable", Left: 1, ExpiresAt: &expires, Fable: true, FableUsed: fableUsed, UsableNow: true}}
+}
+
+func TestFableResetSpendsWhenThePoolRunsDryOnTheOneGivingBackMost(t *testing.T) {
+	resetPool(t)
+	holdFableReset("little", 10)
+	holdFableReset("most", 50)
+	plans := plansFor(poolAuth("little", 0, 100, 120*time.Hour), poolAuth("most", 0, 100, 60*time.Hour), poolAuth("b", 0, 99, 30*time.Hour))
+	if plans["most"].why == "" || plans["little"].why != "" {
+		t.Fatalf("plans = %+v, want only most's Fable reset spent", plans)
+	}
+	if !strings.Contains(plans["little"].plan, "gives back ~6 weekly points") {
+		t.Fatalf("plan = %q, want what it gives back", plans["little"].plan)
+	}
+}
+
+func TestFableResetWaitsWhileAnotherAccountHasWeekLeft(t *testing.T) {
+	resetPool(t)
+	holdFableReset("holder", 50)
+	if plan := planFor(poolAuth("holder", 0, 100, 60*time.Hour), poolAuth("b", 0, 40, 62*time.Hour)); plan.why != "" {
+		t.Fatalf("plan = %+v, want it kept until b runs out", plan)
+	}
+}
+
+func TestFableResetWithNoFableUseIsKept(t *testing.T) {
+	resetPool(t)
+	holdFableReset("holder", 0)
+	if plan := planFor(poolAuth("holder", 0, 100, 60*time.Hour), poolAuth("b", 0, 99, 62*time.Hour)); plan.row != nil {
+		t.Fatalf("plan = %+v, want nothing planned: there is no Fable use to give back", plan)
+	}
+}
+
+func TestFableHolderIsNotPreferredForNewWork(t *testing.T) {
+	resetPool(t)
+	holdFableReset("holder", 50)
+	claudePool.mu.Lock()
+	rows := claudePool.rankLocked([]*Auth{poolAuth("holder", 0, 10, 60*time.Hour)}, time.Now(), 1)
+	claudePool.mu.Unlock()
+	if rows[0].HoldsReset {
+		t.Fatal("a Fable reset doesn't clear a whole week, so its holder shouldn't go first")
+	}
+}
+
+func TestGrantReadsAFableReset(t *testing.T) {
+	g := grantReset(map[string]any{"id": "launch-2610-fable", "clears": []any{"five_hour", "seven_day_overage_included"}, "gives_back_weekly": true,
+		"use_requires_limit": false, "percent_used": map[string]any{"seven_day_overage_included": 44.0, "seven_day": 83.0}}, 1)
+	if !g.Fable || g.Weekly || g.FableUsed != 44 || g.GivesBack(83) != g.FableUsed*poolFableShare {
+		t.Fatalf("grant = %+v, want a Fable reset with 44%% Fable used", g)
+	}
+}
+
+func TestStaleUsageAfterAFableSpendKeepsTheOtherResets(t *testing.T) {
+	api := &resetAPI{usage: `{"seven_day":{"utilization":100},"cedar_ember":{"grants":[{"id":"launch-fable","resets_left":1,"gives_back_weekly":true,` +
+		`"clears":["seven_day_overage_included"],"usable_now":true,"use_requires_limit":false,"type":"full","ends_at":"2030-02-01T00:00:00Z",` +
+		`"percent_used":{"seven_day_overage_included":50,"seven_day":100}}]}}`}
+	resetPool(t)
+	claudePool.client = &http.Client{Transport: api}
+	holder, other := poolAuth("holder", 0, 100, 60*time.Hour), poolAuth("b", 0, 100, 62*time.Hour)
+	for _, a := range []*Auth{holder, other} {
+		a.Metadata["access_token"], a.Metadata["organization_uuid"] = "token", "org"
+	}
+	holdFableReset("holder", 50)
+	holdFableReset("b", 40)
+	now := time.Now()
+	claudePool.spendReset(context.Background(), nil, []*Auth{holder, other}, now)
+	for minute := 1; minute <= 30; minute++ {
+		at := now.Add(time.Duration(minute) * time.Minute)
+		claudePool.readUsage(context.Background(), "holder", "token", at)
+		claudePool.spendReset(context.Background(), nil, []*Auth{holder, other}, at)
+	}
+	if len(api.claims) != 1 {
+		t.Fatalf("claims = %v, want b's reset kept until holder's giveback shows", api.claims)
+	}
+}

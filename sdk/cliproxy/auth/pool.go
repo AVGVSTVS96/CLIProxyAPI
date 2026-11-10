@@ -87,6 +87,10 @@ type PoolReset struct {
 	// NeedsLimit is set when Anthropic lets the reset be used only at a limit it refills.
 	NeedsLimit bool `json:"needsLimit"`
 	Weekly     bool `json:"weekly"`
+	// Fable is set on a reset that zeroes Fable's own weekly allowance and gives back to
+	// the week only what Fable used in it; FableUsed is the percent of that allowance used.
+	Fable     bool    `json:"fable"`
+	FableUsed float64 `json:"fableUsed"`
 }
 
 // PoolPlan is the account's subscription, from its profile.
@@ -259,6 +263,7 @@ type PoolRow struct {
 	auth          *Auth
 	five, week    float64
 	weekCutoff    float64
+	settling      bool
 }
 
 // workingLocked counts the account's working sessions, and their five-hour load with
@@ -323,10 +328,11 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 		}
 		row.Known = r.At > 0
 		for _, reset := range a.resets {
-			if reset.Left > 0 && !reset.Paused && (reset.ExpiresAt == nil || *reset.ExpiresAt > now.UnixMilli()) {
+			if reset.Weekly && reset.Left > 0 && !reset.Paused && (reset.ExpiresAt == nil || *reset.ExpiresAt > now.UnixMilli()) {
 				row.HoldsReset = true
 			}
 		}
+		row.settling = a.spent != nil && a.spent.fable && now.UnixMilli() < a.spent.until && row.week >= a.spent.week
 		row.weekCutoff = cfg.WeeklyCutoff
 		for _, reset := range a.resets {
 			if reset.NeedsLimit && reset.live(now) {
@@ -704,7 +710,11 @@ func grantReset(g map[string]any, left int) PoolReset {
 	for _, c := range clears {
 		weekly = weekly || c == "seven_day"
 	}
-	return PoolReset{ID: id, Kind: resetKind(g), Left: left, ExpiresAt: isoMillis(&ends), Paused: paused, UsableNow: usable, NeedsLimit: needsLimit || !given, Weekly: weekly}
+	fable, _ := g["gives_back_weekly"].(bool)
+	used, _ := g["percent_used"].(map[string]any)
+	fableUsed, _ := used["seven_day_overage_included"].(float64)
+	return PoolReset{ID: id, Kind: resetKind(g), Left: left, ExpiresAt: isoMillis(&ends), Paused: paused, UsableNow: usable,
+		NeedsLimit: needsLimit || !given, Weekly: weekly, Fable: fable && !weekly, FableUsed: fableUsed}
 }
 
 type usageWindow struct {

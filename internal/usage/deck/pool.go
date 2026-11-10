@@ -26,6 +26,8 @@ type HeldReset struct {
 	Kind      string `json:"kind"`
 	Left      int    `json:"left"`
 	ExpiresAt *int64 `json:"expiresAt"`
+	// Weekly points spending it now would give back.
+	GivesBack float64 `json:"givesBack"`
 }
 
 // Account is one pooled Claude account and its standing for new work.
@@ -144,7 +146,7 @@ func reasonsOf(a coreauth.PoolRow, snap coreauth.PoolSnapshot) []string {
 	}
 	var reasons []string
 	if a.HoldsReset {
-		reasons = append(reasons, "Holds a limit reset, so its week gets used first and the reset clears a whole one.")
+		reasons = append(reasons, "Holds a weekly reset, so its week gets used first and the reset clears a whole one.")
 	}
 	if a.Comfortable {
 		return append(reasons, "Has room for another working session.")
@@ -210,8 +212,12 @@ func parsePool(snap coreauth.PoolSnapshot, revision string, seats []seat) *poolS
 			}
 		}
 		account.Idle = seated - a.Working
+		week := 0.0
+		if a.Reading.Week != nil {
+			week = a.Reading.Week.Used
+		}
 		for _, r := range a.Resets {
-			account.HeldResets = append(account.HeldResets, HeldReset{Kind: r.Kind, Left: r.Left, ExpiresAt: r.ExpiresAt})
+			account.HeldResets = append(account.HeldResets, HeldReset{Kind: r.Kind, Left: r.Left, ExpiresAt: r.ExpiresAt, GivesBack: math.Round(r.GivesBack(week))})
 		}
 		state.accounts = append(state.accounts, account)
 	}
