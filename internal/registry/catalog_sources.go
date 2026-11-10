@@ -28,6 +28,7 @@ type catalogUpdater struct {
 	publishedSeq    uint64
 	cancel          context.CancelFunc
 	ctx             context.Context
+	loaded          chan struct{}
 	parentDone      <-chan struct{}
 	fetch           func(context.Context, string) ([]byte, error)
 	fetchWithSource func(context.Context, string) ([]byte, string, error)
@@ -58,12 +59,16 @@ func (u *catalogUpdater) configure(ctx context.Context, source string) {
 	u.cancel = cancel
 	u.ctx = refreshCtx
 	u.parentDone = ctx.Done()
+	loaded := make(chan struct{})
+	u.loaded = loaded
 	if source == "disabled" {
+		close(loaded)
 		return
 	}
 	generation := u.generation
 	go func() {
 		u.refresh(refreshCtx, source, generation)
+		close(loaded)
 		if source == embeddedCatalogSource {
 			return
 		}
@@ -78,6 +83,18 @@ func (u *catalogUpdater) configure(ctx context.Context, source string) {
 			}
 		}
 	}()
+}
+
+// firstLoad is closed once the current source's first refresh has published or failed.
+func (u *catalogUpdater) firstLoad() <-chan struct{} {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.loaded == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	return u.loaded
 }
 
 // CatalogSourceStatus reports the outcome of refreshing a single model catalog.
@@ -395,6 +412,25 @@ func StartModelCatalogUpdaters(ctx context.Context, sources CatalogSources, home
 	catalogRuntime.sources = sources
 	catalogRuntime.home = home
 	configureCatalogs(ctx, sources, catalogRuntime.local, home)
+}
+
+// WaitForModelCatalogs waits up to limit for every catalog's first load to finish,
+// and reports whether they all did. Serving before then answers models that only the
+// remote catalog knows with "unknown provider", a 400 that Claude Code behind a gateway
+// reads as "tool search unsupported" and never retries.
+func WaitForModelCatalogs(ctx context.Context, limit time.Duration) bool {
+	deadline := time.NewTimer(limit)
+	defer deadline.Stop()
+	for _, u := range []*catalogUpdater{generalCatalogUpdater, codexCatalogUpdater, devinCatalogUpdater} {
+		select {
+		case <-u.firstLoad():
+		case <-deadline.C:
+			return false
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateModelCatalogSources updates an already-started process policy on reload.

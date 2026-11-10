@@ -56,6 +56,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}()
 
 	s.startModelCatalogUpdaters(ctx)
+	if !registry.WaitForModelCatalogs(ctx, 10*time.Second) {
+		log.Warn("model catalogs still loading after 10s; serving with the embedded ones until they arrive")
+	}
 
 	usage.StartDefault(ctx)
 	cfg := s.currentConfig()
