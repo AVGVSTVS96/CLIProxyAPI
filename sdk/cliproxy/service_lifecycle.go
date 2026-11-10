@@ -69,7 +69,11 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownDrain)
+		drain := shutdownDrain
+		if s.handedOver {
+			drain = handoffDrain
+		}
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), drain)
 		defer shutdownCancel()
 		if errShutdown := s.Shutdown(shutdownCtx); errShutdown != nil {
 			log.Errorf("service shutdown returned error: %v", errShutdown)
@@ -311,7 +315,7 @@ func (s *Service) handOff() error {
 	}
 	s.server.StopAccepting()
 	s.saveSessionBindings()
-	s.bindingsHandedOver = true
+	s.handedOver = true
 	if errCommit := successor.Commit(); errCommit != nil {
 		log.Errorf("handoff: new process failed while taking over (%v); systemd restarts the service", errCommit)
 	} else {
@@ -323,6 +327,10 @@ func (s *Service) handOff() error {
 // shutdownDrain bounds how long a stop waits for in-flight requests, such as long model
 // streams, to finish; the service unit's TimeoutStopSec must exceed it.
 const shutdownDrain = 3 * time.Minute
+
+// handoffDrain bounds the drain after a reload: nobody waits on it then, and an answer cut
+// short is paid for again.
+const handoffDrain = 15 * time.Minute
 
 // Shutdown stops background workers and immediately closes the HTTP server.
 // It ensures all resources are properly cleaned up and connections are closed.
@@ -450,7 +458,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 		}
-		if !s.bindingsHandedOver {
+		if !s.handedOver {
 			s.saveSessionBindings()
 		}
 

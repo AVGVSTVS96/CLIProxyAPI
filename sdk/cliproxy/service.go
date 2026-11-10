@@ -76,8 +76,8 @@ type Service struct {
 	// serverErr channel for server startup/shutdown errors.
 	serverErr chan error
 
-	// bindingsHandedOver is set once a reload has saved the session bindings for the new process.
-	bindingsHandedOver bool
+	// handedOver is set once a reload has handed the socket and session bindings to a new process.
+	handedOver bool
 
 	// watcher handles file system monitoring.
 	watcher *WatcherWrapper
