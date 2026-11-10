@@ -36,16 +36,25 @@ func (u *cacheWarmUpstream) seen() []string {
 	return append([]string(nil), u.bodies...)
 }
 
-func newCacheWarmTest(t *testing.T, status string) (*gin.Engine, *cacheWarmUpstream) {
+func newCacheWarmTest(t *testing.T, status string, job ...string) (*gin.Engine, *cacheWarmUpstream) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	state := `{"pid":1,"sessionId":"s1","status":"` + status + `"}`
+	state := `{"pid":1,"sessionId":"s1-session","status":"` + status + `"}`
 	if err := os.WriteFile(filepath.Join(dir, "sessions", "1.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if len(job) > 0 {
+		if err := os.MkdirAll(filepath.Join(dir, "jobs", "s1-sessi"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		state := `{"sessionId":"s1-session","state":"` + job[0] + `"}`
+		if err := os.WriteFile(filepath.Join(dir, "jobs", "s1-sessi", "state.json"), []byte(state), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
 
@@ -60,7 +69,7 @@ func newCacheWarmTest(t *testing.T, status string) (*gin.Engine, *cacheWarmUpstr
 func sendCacheWarmTest(engine *gin.Engine, agent string) {
 	body := `{"model":"m","max_tokens":64000,"stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
-	request.Header.Set("X-Claude-Code-Session-Id", "s1")
+	request.Header.Set("X-Claude-Code-Session-Id", "s1-session")
 	if agent != "" {
 		request.Header.Set("X-Claude-Code-Agent-Id", agent)
 	}
@@ -113,5 +122,25 @@ func TestCacheWarmStopsWhenTouchMissesTheCache(t *testing.T) {
 
 	if n := len(upstream.seen()); n != 2 {
 		t.Fatalf("a touch that re-saves the conversation should be the last, got %d requests", n)
+	}
+}
+
+func TestCacheWarmTouchesIdleSessionWhoseJobIsWorking(t *testing.T) {
+	engine, upstream := newCacheWarmTest(t, "idle", "working")
+	sendCacheWarmTest(engine, "")
+	time.Sleep(80 * time.Millisecond)
+
+	if n := len(upstream.seen()); n < 2 {
+		t.Fatalf("a session still working on its job should be touched, got %d requests", n)
+	}
+}
+
+func TestCacheWarmLetsBlockedJobCool(t *testing.T) {
+	engine, upstream := newCacheWarmTest(t, "idle", "blocked")
+	sendCacheWarmTest(engine, "")
+	time.Sleep(80 * time.Millisecond)
+
+	if n := len(upstream.seen()); n != 1 {
+		t.Fatalf("a session waiting on its owner should get no touch, got %d requests", n)
 	}
 }

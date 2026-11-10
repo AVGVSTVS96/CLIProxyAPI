@@ -40,14 +40,14 @@ type cacheWarmEntry struct {
 }
 
 // cacheWarmer keeps a Claude Code session's main conversation in the prompt cache while
-// Claude Code reports the session busy, so a session waiting on its own background work
-// finds its cache warm when that work wakes it.
+// Claude Code reports the session busy, or its background job says it is still working,
+// so a session waiting on its own agents and jobs finds its cache warm when they wake it.
 type cacheWarmer struct {
-	serve    http.Handler
-	sessions string
-	after    time.Duration
-	mu       sync.Mutex
-	entries  map[string]*cacheWarmEntry
+	serve   http.Handler
+	claude  string
+	after   time.Duration
+	mu      sync.Mutex
+	entries map[string]*cacheWarmEntry
 }
 
 func newCacheWarmer(serve http.Handler) *cacheWarmer {
@@ -57,10 +57,10 @@ func newCacheWarmer(serve http.Handler) *cacheWarmer {
 		dir = filepath.Join(home, ".claude")
 	}
 	return &cacheWarmer{
-		serve:    serve,
-		sessions: filepath.Join(dir, "sessions"),
-		after:    cacheWarmAfter,
-		entries:  map[string]*cacheWarmEntry{},
+		serve:   serve,
+		claude:  dir,
+		after:   cacheWarmAfter,
+		entries: map[string]*cacheWarmEntry{},
 	}
 }
 
@@ -133,7 +133,7 @@ func (w *cacheWarmer) touch(session string, due time.Time) {
 		w.mu.Unlock()
 		return
 	}
-	if entry.touches >= cacheWarmMaxTouches || !w.busy(session) {
+	if entry.touches >= cacheWarmMaxTouches || !w.working(session) {
 		delete(w.entries, session)
 		w.mu.Unlock()
 		return
@@ -192,23 +192,31 @@ func (w *cacheWarmer) send(header http.Header, body []byte) (read, written int64
 	return usage.Get("cache_read_input_tokens").Int(), usage.Get("cache_creation_input_tokens").Int(), true
 }
 
-func (w *cacheWarmer) busy(session string) bool {
-	files, err := filepath.Glob(filepath.Join(w.sessions, "*.json"))
-	if err != nil {
-		return false
+func (w *cacheWarmer) working(session string) bool {
+	if len(session) >= 8 {
+		job := claudeState(filepath.Join(w.claude, "jobs", session[:8], "state.json"))
+		if job.SessionID == session && job.State == "working" {
+			return true
+		}
 	}
+	files, _ := filepath.Glob(filepath.Join(w.claude, "sessions", "*.json"))
 	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			continue
-		}
-		var state struct {
-			SessionID string `json:"sessionId"`
-			Status    string `json:"status"`
-		}
-		if json.Unmarshal(data, &state) == nil && state.SessionID == session && state.Status == "busy" {
+		if running := claudeState(file); running.SessionID == session && running.Status == "busy" {
 			return true
 		}
 	}
 	return false
+}
+
+type claudeSessionState struct {
+	SessionID string `json:"sessionId"`
+	Status    string `json:"status"`
+	State     string `json:"state"`
+}
+
+func claudeState(file string) (state claudeSessionState) {
+	if data, err := os.ReadFile(file); err == nil {
+		_ = json.Unmarshal(data, &state)
+	}
+	return state
 }
