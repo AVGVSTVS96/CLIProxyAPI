@@ -439,6 +439,12 @@ func (m *Manager) SetSelector(selector Selector) {
 		m.mu.Unlock()
 		return
 	}
+	// A routing config change must not move live sessions off the account holding their cache.
+	if next, ok := selector.(*SessionAffinitySelector); ok && next != nil {
+		if prev, ok := oldSelector.(*SessionAffinitySelector); ok && prev != nil {
+			next.cache.Restore(prev.cache.Snapshot())
+		}
+	}
 	m.selector = selector
 	m.mu.Unlock()
 

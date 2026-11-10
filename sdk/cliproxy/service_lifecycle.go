@@ -103,6 +103,7 @@ func (s *Service) Run(ctx context.Context) error {
 		// live requests with "unknown provider" while the watcher catches up.
 		s.registerModelsForAuthBatch(ctx, s.coreManager.List())
 		s.coreManager.RefreshSchedulerAll()
+		s.restoreSessionBindings()
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
@@ -399,6 +400,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 		}
+		s.saveSessionBindings()
 
 		if s.pluginHost != nil {
 			sdktranslator.SetPluginHooks(nil)
@@ -460,4 +462,29 @@ func (s *Service) startModelCatalogUpdaters(ctx context.Context) {
 		proxyURL = cfg.ProxyURL
 	}
 	executor.StartXAIVersionUpdater(ctx, proxyURL)
+}
+
+func (s *Service) restoreSessionBindings() {
+	restored, errRestore := s.coreManager.RestoreSessionBindings()
+	if errRestore != nil {
+		log.Warnf("session-affinity: could not restore the last run's bindings: %v", errRestore)
+		return
+	}
+	if restored > 0 {
+		log.Infof("session-affinity: restored %d session bindings from the last run", restored)
+	}
+}
+
+func (s *Service) saveSessionBindings() {
+	if s.coreManager == nil {
+		return
+	}
+	saved, errSave := s.coreManager.SaveSessionBindings()
+	if errSave != nil {
+		log.Errorf("session-affinity: could not save bindings for the next run: %v", errSave)
+		return
+	}
+	if saved > 0 {
+		log.Infof("session-affinity: saved %d session bindings for the next run", saved)
+	}
 }

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"container/list"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -511,4 +512,73 @@ func (c *SessionCache) cleanup() {
 			c.removeAliasGroupLocked(group)
 		}
 	}
+}
+
+// SavedSessionBinding is one live session binding in a form that outlives the process.
+type SavedSessionBinding struct {
+	AuthID    string    `json:"authId"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Aliases   []string  `json:"aliases"`
+	SessionID string    `json:"sessionId,omitempty"`
+	Provider  string    `json:"provider,omitempty"`
+}
+
+// Snapshot returns the live bindings in the order they were selected.
+func (c *SessionCache) Snapshot() []SavedSessionBinding {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	now := time.Now()
+	groups := make([]sessionEntry, 0, len(c.groups))
+	for _, group := range c.groups {
+		if now.Before(group.expiresAt) {
+			groups = append(groups, group)
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].binding.sequence < groups[j].binding.sequence })
+	saved := make([]SavedSessionBinding, 0, len(groups))
+	for _, group := range groups {
+		saved = append(saved, SavedSessionBinding{
+			AuthID:    group.authID,
+			ExpiresAt: group.expiresAt,
+			Aliases:   append([]string(nil), group.aliases...),
+			SessionID: group.binding.sessionID,
+			Provider:  group.binding.provider,
+		})
+	}
+	return saved
+}
+
+// Restore adds saved bindings that are still live, keeping their expiry and order.
+// A binding made in this cache since wins over a saved one for the same session.
+func (c *SessionCache) Restore(saved []SavedSessionBinding) int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureInitializedLocked()
+	now := time.Now()
+	restored := 0
+	for _, entry := range saved {
+		aliases := make([]string, 0, len(entry.Aliases))
+		for _, alias := range compactSessionAliases(mergeSessionAliases(nil, entry.Aliases...)) {
+			if _, taken := c.entries[alias]; !taken {
+				aliases = append(aliases, alias)
+			}
+		}
+		if entry.AuthID == "" || len(aliases) == 0 || !now.Before(entry.ExpiresAt) {
+			continue
+		}
+		binding := sessionBinding{sessionID: entry.SessionID, provider: entry.Provider}
+		if binding.sessionID != "" && binding.provider != "" {
+			c.bindingSequence++
+			binding.sequence = c.bindingSequence
+		}
+		c.replaceAliasGroupsLocked(entry.AuthID, entry.ExpiresAt, aliases, binding)
+		restored++
+	}
+	return restored
 }
