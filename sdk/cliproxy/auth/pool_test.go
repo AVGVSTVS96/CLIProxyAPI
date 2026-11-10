@@ -74,14 +74,14 @@ func TestQuotaSelectorPrefersAnAccountHoldingAReset(t *testing.T) {
 func TestMoveAwayLeavesAnAccountNearItsCutoffOnlyForAClearOne(t *testing.T) {
 	resetPool(t)
 	hot, calm := poolAuth("hot", 85, 30, 48*time.Hour), poolAuth("calm", 10, 30, 48*time.Hour)
-	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}, nil); len(rest) != 1 || rest[0].ID != "calm" || level != "early" {
+	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}, nil, ""); len(rest) != 1 || rest[0].ID != "calm" || level != "early" {
 		t.Fatalf("rest = %v, want only calm", rest)
 	}
 	warm := poolAuth("warm", 82, 30, 48*time.Hour)
-	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, warm}, nil); rest != nil {
+	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, warm}, nil, ""); rest != nil {
 		t.Fatalf("moved to an account that is no clearer: %v", rest)
 	}
-	if rest, _ := claudePool.moveAway(calm, []*Auth{hot, calm}, nil); rest != nil {
+	if rest, _ := claudePool.moveAway(calm, []*Auth{hot, calm}, nil, ""); rest != nil {
 		t.Fatalf("moved a session off a calm account: %v", rest)
 	}
 }
@@ -141,10 +141,10 @@ func TestAgentSDKSessionsLoadTheFiveHourRoomByTheFactor(t *testing.T) {
 func TestMoveAwayGivesAnAgentSDKSessionAWiderMargin(t *testing.T) {
 	resetPool(t)
 	hot, calm := poolAuth("hot", 76, 30, 48*time.Hour), poolAuth("calm", 10, 30, 48*time.Hour)
-	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, calm}, sdkHeaders("cli")); rest != nil {
+	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, calm}, sdkHeaders("cli"), ""); rest != nil {
 		t.Fatalf("moved an interactive session 14 points from the cutoff: %v", rest)
 	}
-	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}, sdkHeaders("sdk-cli")); len(rest) != 1 || level != "early" {
+	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}, sdkHeaders("sdk-cli"), ""); len(rest) != 1 || level != "early" {
 		t.Fatalf("kept an Agent SDK session 14 points from the cutoff: rest = %v", rest)
 	}
 }
@@ -170,7 +170,7 @@ func TestAnAccountWithoutAFiveHourLimitCountsSessionsAlike(t *testing.T) {
 	claudePool.sessions["s1"] = &poolSeat{account: "x", entrypoint: "sdk-cli", seen: now}
 	claudePool.sessions["s2"] = &poolSeat{account: "y", entrypoint: "cli", seen: now}
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{x, y}, now, 1.7)
+	rows := claudePool.rankLocked([]*Auth{x, y}, now, 1.7, "")
 	claudePool.mu.Unlock()
 	if rows[0].Room != rows[1].Room {
 		t.Fatalf("rooms %v and %v, want equal with no five-hour limit", rows[0].Room, rows[1].Room)

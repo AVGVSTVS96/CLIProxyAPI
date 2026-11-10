@@ -44,9 +44,13 @@ type Account struct {
 	Reasons     []string    `json:"reasons"`
 	FiveHour    LimitWindow `json:"fiveHour"`
 	Week        LimitWindow `json:"week"`
-	Working     int         `json:"working"`
-	Idle        int         `json:"idle"`
-	HeldResets  []HeldReset `json:"heldResets"`
+	// Fable's own weekly allowance, which Fable work needs room in as well as the week, and
+	// its size as a share of the week (0 to 1) once Anthropic has reported it.
+	Fable      LimitWindow `json:"fable"`
+	FableShare *float64    `json:"fableShare"`
+	Working    int         `json:"working"`
+	Idle       int         `json:"idle"`
+	HeldResets []HeldReset `json:"heldResets"`
 	// When the pool spends this account's held reset, or why it keeps it.
 	ResetPlan string `json:"resetPlan,omitempty"`
 	// When the pool spent this account's resets (unix ms), oldest first.
@@ -145,6 +149,9 @@ func reasonsOf(a coreauth.PoolRow, snap coreauth.PoolSnapshot) []string {
 		return []string{fmt.Sprintf("Past the %s%% weekly cutoff.", number(snap.WeeklyCutoff))}
 	}
 	var reasons []string
+	if a.Fable != nil && a.Fable.Used >= snap.WeeklyCutoff {
+		reasons = append(reasons, "Fable allowance used up, so Fable work goes to other accounts until it resets.")
+	}
 	if a.HoldsReset {
 		reasons = append(reasons, "Holds a weekly reset, so its week gets used first and the reset clears a whole one.")
 	}
@@ -190,11 +197,15 @@ func parsePool(snap coreauth.PoolSnapshot, revision string, seats []seat) *poolS
 			Cloud: a.Cloud, ID: a.Account, Label: a.Email, Rank: ptr(rank + 1), Standing: standingOf(a, rank), Reasons: reasonsOf(a, snap),
 			FiveHour:    windowOf(a.Reading.FiveHour, a.Reading.At, fiveHours, snap.SessionCutoff),
 			Week:        windowOf(a.Reading.Week, a.Reading.At, weekMs, snap.WeeklyCutoff),
+			Fable:       windowOf(a.Fable, a.FableAt, weekMs, snap.WeeklyCutoff),
 			Working:     a.Working,
 			HeldResets:  []HeldReset{},
 			ResetPlan:   a.ResetPlan,
 			ResetsSpent: append([]int64{}, a.ResetsSpent...),
 			AtLimit:     a.AtLimit,
+		}
+		if a.FableShare > 0 {
+			account.FableShare = ptr(a.FableShare)
 		}
 		if a.Plan != nil {
 			account.Plan = planOf(a.Plan.Tier)

@@ -18,9 +18,11 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// A held weekly reset zeroes an account's week; a Fable reset gives back to it only what Fable
-// used in it. The pool spends one the moment every Claude account has used its week: before that, the room it gives would only stand in for room
-// other accounts already have, which then goes unused. It waits out a dry spell shorter than
+// A held weekly reset zeroes an account's week; a Fable reset zeroes Fable's own allowance and
+// gives back to the week only what Fable used in it. The pool spends a weekly reset the moment
+// every Claude account has used its week, and a Fable reset the moment none has Fable left:
+// before that, the room it gives would only stand in for room other accounts already have,
+// which then goes unused. It waits out a dry spell shorter than
 // poolDrySpell, when a week comes back on its own soon, unless the reset expires within
 // poolLastWeek. One reset is spent per dry spell, the one that gives back the most, then the one
 // whose account's week ends last. A reset in its last poolLastHour is spent whatever the pool holds.
@@ -42,9 +44,9 @@ const (
 	poolSettle       = time.Hour
 	poolResetsFile   = "resets-spent.ndjson"
 	poolClaimsFile   = "reset-claims.json"
-	// WHY: weekly points per percent of Fable's own weekly allowance, measured Nov 10 2026 on
-	// four Max 20x accounts from their Fable spend (0.47-0.65); Anthropic reports neither.
-	poolFableShare = 0.55
+	// WHY: Fable's allowance as a fraction of the week until the usage endpoint reports it
+	// (weekly_scoped_shares); it reported 0.5 on all five Max 20x accounts on Nov 10 2026.
+	poolFableShare = 0.5
 )
 
 // poolClaim is a claim Anthropic has not settled, retried under the same request id.
@@ -78,7 +80,11 @@ func (r PoolReset) live(now time.Time) bool {
 // GivesBack is how many weekly points spending r now would give back to a week at week used.
 func (r PoolReset) GivesBack(week float64) float64 {
 	if r.Fable {
-		return min(week, r.FableUsed*poolFableShare)
+		share := r.Share
+		if share <= 0 {
+			share = poolFableShare
+		}
+		return min(week, r.FableUsed*share)
 	}
 	return week
 }
@@ -128,7 +134,7 @@ func (a *poolAccount) settled(r PoolReading, now time.Time) (PoolReading, bool) 
 // whether to spend it now.
 func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []poolSpend {
 	var holders []poolSpend
-	var busy []string
+	var busy, fableBusy []string
 	dryUntil := int64(math.MaxInt64)
 	for i := range rows {
 		r := &rows[i]
@@ -137,6 +143,9 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 		}
 		if !r.Known || r.week < r.weekCutoff || r.settling {
 			busy = append(busy, r.label())
+		}
+		if !r.Known || r.week < r.weekCutoff && r.fable < p.cfg.WeeklyCutoff || r.settling {
+			fableBusy = append(fableBusy, r.label())
 		}
 		dryUntil = min(dryUntil, r.WeekResetsAt)
 		if g, ok := r.nextReset(now); ok {
@@ -171,22 +180,26 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 	for i := range holders {
 		h := &holders[i]
 		left := h.grant.left(now)
+		waiting, used := busy, "week"
+		if h.grant.Fable && len(busy) > 0 {
+			waiting, used = fableBusy, "week or Fable allowance"
+		}
 		switch {
 		case h.plan != "":
-		case len(busy) > 0:
-			one := len(busy) == 1
-			h.plan = fmt.Sprintf("Spends itself once %s %s used %s week.", strings.Join(busy, " and "),
-				map[bool]string{true: "has", false: "have"}[one], map[bool]string{true: "its", false: "their"}[one])
+		case len(waiting) > 0:
+			one := len(waiting) == 1
+			h.plan = fmt.Sprintf("Spends itself once %s %s used %s %s.", strings.Join(waiting, " and "),
+				map[bool]string{true: "has", false: "have"}[one], map[bool]string{true: "its", false: "their"}[one], used)
 		case spent:
-			h.plan = "Every account has used its week, but another reset is being spent, so this one waits for the next time they all have."
+			h.plan = fmt.Sprintf("Every account has used its %s, but another reset is being spent, so this one waits for the next time they all have.", used)
 		case dry >= poolDrySpell:
-			spend(h, fmt.Sprintf("every account had used its week and none came back before %s", when(dryUntil)))
+			spend(h, fmt.Sprintf("every account had used its %s and none came back before %s", used, when(dryUntil)))
 			spent = true
 		case left < poolLastWeek:
-			spend(h, fmt.Sprintf("every account had used its week and the reset expires %s", when(*h.grant.ExpiresAt)))
+			spend(h, fmt.Sprintf("every account had used its %s and the reset expires %s", used, when(*h.grant.ExpiresAt)))
 			spent = true
 		default:
-			h.plan = fmt.Sprintf("Every account has used its week, but one comes back %s, so the reset waits for a longer gap.", when(dryUntil))
+			h.plan = fmt.Sprintf("Every account has used its %s, but one comes back %s, so the reset waits for a longer gap.", used, when(dryUntil))
 		}
 		if h.grant.Fable {
 			h.plan = fmt.Sprintf("Fable reset, gives back ~%.0f weekly points (what Fable used this week). %s", h.grant.GivesBack(h.row.week), h.plan)
@@ -210,7 +223,7 @@ func (p *claudePoolState) spendReset(ctx context.Context, m *Manager, auths []*A
 		return
 	}
 	p.loadClaimsLocked()
-	plans := p.planResetsLocked(p.rankLocked(enabled, now, 1), now)
+	plans := p.planResetsLocked(p.rankLocked(enabled, now, 1, ""), now)
 	p.mu.Unlock()
 	for _, plan := range plans {
 		if plan.why != "" && p.spendOne(ctx, enabled, plan, now) && m != nil {
@@ -223,7 +236,7 @@ func (p *claudePoolState) spendReset(ctx context.Context, m *Manager, auths []*A
 
 // replanLocked is the plan for one account's reset.
 func (p *claudePoolState) replanLocked(auths []*Auth, account string, now time.Time) poolSpend {
-	for _, plan := range p.planResetsLocked(p.rankLocked(auths, now, 1), now) {
+	for _, plan := range p.planResetsLocked(p.rankLocked(auths, now, 1, ""), now) {
 		if plan.row.Account == account {
 			return plan
 		}
@@ -312,6 +325,8 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 		}
 		if !plan.grant.Fable {
 			a.reading = PoolReading{FiveHour: plan.row.Reading.FiveHour, Week: &PoolWindow{Used: 0, ResetsAt: weekEnds}, At: now.UnixMilli()}
+		} else if a.fable != nil {
+			a.fable, a.fableAt = &PoolWindow{Used: 0, ResetsAt: a.fable.ResetsAt}, now.UnixMilli()
 		}
 		a.spent = &poolSpent{week: plan.row.week, weekEnds: weekEnds, until: now.Add(poolSettle).UnixMilli(), fable: plan.grant.Fable}
 		resets := make([]PoolReset, 0, len(a.resets))

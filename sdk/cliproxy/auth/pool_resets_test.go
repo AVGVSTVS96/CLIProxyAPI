@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 func holdReset(id string, expiresIn time.Duration) {
@@ -25,7 +27,7 @@ func plansFor(auths ...*Auth) map[string]poolSpend {
 	claudePool.mu.Lock()
 	defer claudePool.mu.Unlock()
 	out := map[string]poolSpend{}
-	for _, plan := range claudePool.planResetsLocked(claudePool.rankLocked(auths, now, 1), now) {
+	for _, plan := range claudePool.planResetsLocked(claudePool.rankLocked(auths, now, 1, ""), now) {
 		out[plan.row.Account] = plan
 	}
 	return out
@@ -103,7 +105,7 @@ func TestResetThatNeedsTheLimitRunsItsHolderToTheLimit(t *testing.T) {
 	claudePool.account("holder").resets[0].NeedsLimit = true
 	holder, b := poolAuth("holder", 0, 99, 60*time.Hour), poolAuth("b", 0, 10, 60*time.Hour)
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{holder, b}, time.Now(), 1)
+	rows := claudePool.rankLocked([]*Auth{holder, b}, time.Now(), 1, "")
 	claudePool.mu.Unlock()
 	if rows[0].Account != "holder" || !rows[0].Usable {
 		t.Fatalf("rows = %+v, want the holder first and still taking work at 99%%", rows)
@@ -249,7 +251,7 @@ func TestFableResetSpendsWhenThePoolRunsDryOnTheOneGivingBackMost(t *testing.T) 
 	if plans["most"].why == "" || plans["little"].why != "" {
 		t.Fatalf("plans = %+v, want only most's Fable reset spent", plans)
 	}
-	if !strings.Contains(plans["little"].plan, "gives back ~6 weekly points") {
+	if !strings.Contains(plans["little"].plan, "gives back ~5 weekly points") {
 		t.Fatalf("plan = %q, want what it gives back", plans["little"].plan)
 	}
 }
@@ -274,7 +276,7 @@ func TestFableHolderIsNotPreferredForNewWork(t *testing.T) {
 	resetPool(t)
 	holdFableReset("holder", 50)
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{poolAuth("holder", 0, 10, 60*time.Hour)}, time.Now(), 1)
+	rows := claudePool.rankLocked([]*Auth{poolAuth("holder", 0, 10, 60*time.Hour)}, time.Now(), 1, "")
 	claudePool.mu.Unlock()
 	if rows[0].HoldsReset {
 		t.Fatal("a Fable reset doesn't clear a whole week, so its holder shouldn't go first")
@@ -310,5 +312,82 @@ func TestStaleUsageAfterAFableSpendKeepsTheOtherResets(t *testing.T) {
 	}
 	if len(api.claims) != 1 {
 		t.Fatalf("claims = %v, want b's reset kept until holder's giveback shows", api.claims)
+	}
+}
+
+func fableAt(a *Auth, used float64) *Auth {
+	a.Quota.Signals["Anthropic-Ratelimit-Unified-7d_oi-Utilization"] = strconv.FormatFloat(used/100, 'f', -1, 64)
+	a.Quota.Signals["Anthropic-Ratelimit-Unified-7d_oi-Reset"] = a.Quota.Signals["Anthropic-Ratelimit-Unified-7d-Reset"]
+	return a
+}
+
+func pickModel(t *testing.T, model string, auths ...*Auth) string {
+	t.Helper()
+	got, err := (&QuotaSelector{}).Pick(context.Background(), "claude", model, cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got.ID
+}
+
+func TestFableWorkSkipsAnAccountWithNoFableLeft(t *testing.T) {
+	resetPool(t)
+	spent, other := fableAt(poolAuth("spent", 10, 40, 10*time.Hour), 99), fableAt(poolAuth("other", 10, 40, 120*time.Hour), 30)
+	if got := pickModel(t, "claude-fable-5-2", spent, other); got != "other" {
+		t.Fatalf("Fable went to %s, want other, the account with Fable left", got)
+	}
+	if got := pickModel(t, "claude-opus-5-5", spent, other); got != "spent" {
+		t.Fatalf("Opus went to %s, want spent, whose week runs out first", got)
+	}
+}
+
+func TestFableReadingOutlivesTheNextReplyOfAnotherModel(t *testing.T) {
+	resetPool(t)
+	spent, other := fableAt(poolAuth("spent", 10, 40, 10*time.Hour), 99), poolAuth("other", 10, 40, 120*time.Hour)
+	claudePool.observeFable(spent)
+	spent.Quota.Signals = poolAuth("spent", 10, 40, 10*time.Hour).Quota.Signals
+	if got := pickModel(t, "claude-fable-5-2[1m]", spent, other); got != "other" {
+		t.Fatalf("Fable went to %s after an Opus reply dropped the Fable headers", got)
+	}
+}
+
+func TestFableSessionLeavesAnAccountRunningOutOfFable(t *testing.T) {
+	resetPool(t)
+	hot, calm := fableAt(poolAuth("hot", 10, 30, 48*time.Hour), 96), fableAt(poolAuth("calm", 10, 30, 48*time.Hour), 20)
+	if rest, level := claudePool.moveAway(hot, []*Auth{hot, calm}, nil, "claude-fable-5-2"); len(rest) != 1 || level != "early" {
+		t.Fatalf("kept a Fable session 2 points from Fable's cutoff: rest = %v", rest)
+	}
+	if rest, _ := claudePool.moveAway(hot, []*Auth{hot, calm}, nil, "claude-opus-5-5"); rest != nil {
+		t.Fatalf("moved an Opus session over Fable's allowance: %v", rest)
+	}
+}
+
+func TestUsageReadsFablesAllowanceAndItsShareOfTheWeek(t *testing.T) {
+	resetPool(t)
+	claudePool.client = &http.Client{Transport: &resetAPI{usage: `{"seven_day":{"utilization":82},` +
+		`"limits":[{"kind":"weekly_all","percent":82},{"kind":"weekly_scoped","percent":51,"resets_at":"2030-01-01T00:00:00Z","scope":{"model":{"display_name":"Fable"}}}],` +
+		`"weekly_scoped_shares":[{"limit_index":1,"used_percent_of_weekly":26,"allowance_percent_of_weekly":50}],` +
+		`"cedar_ember":{"grants":[{"id":"launch-fable","resets_left":1,"gives_back_weekly":true,"clears":["seven_day_overage_included"],` +
+		`"usable_now":true,"use_requires_limit":false,"ends_at":"2030-02-01T00:00:00Z","percent_used":{"seven_day_overage_included":51,"seven_day":82}}]}}`}}
+	claudePool.readUsage(context.Background(), "a", "token", time.Now())
+	claudePool.mu.Lock()
+	rows := claudePool.rankLocked([]*Auth{poolAuth("a", 0, 82, 48*time.Hour)}, time.Now(), 1, "claude-fable-5-2")
+	claudePool.mu.Unlock()
+	r := rows[0]
+	if r.Fable == nil || r.Fable.Used != 51 || r.FableShare != 0.5 || r.Resets[0].GivesBack(82) != 25.5 {
+		t.Fatalf("row = %+v, want Fable at 51%%, half the week, giving back 25.5 points", r)
+	}
+}
+
+func TestFableResetSpendsOnceNoAccountHasFableLeft(t *testing.T) {
+	resetPool(t)
+	holdFableReset("holder", 100)
+	holder, b := fableAt(poolAuth("holder", 0, 70, 60*time.Hour), 100), fableAt(poolAuth("b", 0, 40, 62*time.Hour), 99)
+	if plan := planFor(holder, b); plan.why == "" || !strings.Contains(plan.why, "Fable allowance") {
+		t.Fatalf("plan = %+v, want it spent: Fable work has nowhere left to go", plan)
+	}
+	b = fableAt(poolAuth("b", 0, 40, 62*time.Hour), 60)
+	if plan := planFor(holder, b); plan.why != "" || !strings.Contains(plan.plan, "b@example.com has used its week or Fable allowance") {
+		t.Fatalf("plan = %+v, want it kept while b has Fable left", plan)
 	}
 }

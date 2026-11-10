@@ -91,6 +91,8 @@ type PoolReset struct {
 	// the week only what Fable used in it; FableUsed is the percent of that allowance used.
 	Fable     bool    `json:"fable"`
 	FableUsed float64 `json:"fableUsed"`
+	// Share is Fable's allowance as a fraction of the week, as Anthropic reports it.
+	Share float64 `json:"share,omitempty"`
 }
 
 // PoolPlan is the account's subscription, from its profile.
@@ -113,6 +115,11 @@ type poolAccount struct {
 	needsReauth bool
 	claim       *poolClaim
 	spent       *poolSpent
+	// Fable's own weekly allowance: its reading, when it was read (unix ms), and its size
+	// as a fraction of the week.
+	fable      *PoolWindow
+	fableAt    int64
+	fableShare float64
 }
 
 type poolSeat struct {
@@ -216,6 +223,41 @@ func headerReading(auth *Auth) PoolReading {
 	return r
 }
 
+// isFable reports whether model draws on Fable's own weekly allowance as well as the week.
+func isFable(model string) bool {
+	return strings.Contains(strings.ToLower(model), "fable")
+}
+
+// headerFable is the Fable allowance reading the last response carried, which only a
+// Fable reply does, and when it was read (unix ms).
+func headerFable(auth *Auth) (*PoolWindow, int64) {
+	signals := auth.Quota.Signals
+	used, err := strconv.ParseFloat(signals["Anthropic-Ratelimit-Unified-7d_oi-Utilization"], 64)
+	if err != nil || math.IsNaN(used) {
+		return nil, 0
+	}
+	reset, _ := strconv.ParseInt(signals["Anthropic-Ratelimit-Unified-7d_oi-Reset"], 10, 64)
+	return &PoolWindow{Used: used * 100, ResetsAt: reset * 1000}, auth.Quota.ObservedAt.UnixMilli()
+}
+
+// observeFable keeps a Fable reply's allowance reading, which the next reply of another
+// model drops from the auth's signals.
+func (p *claudePoolState) observeFable(auth *Auth) {
+	if !isClaudeAuth(auth) {
+		return
+	}
+	p.mu.Lock()
+	p.fableLocked(auth)
+	p.mu.Unlock()
+}
+
+func (p *claudePoolState) fableLocked(auth *Auth) {
+	a := p.account(poolAccountID(auth))
+	if w, at := headerFable(auth); w != nil && at > a.fableAt {
+		a.fable, a.fableAt = w, at
+	}
+}
+
 // readingLocked is the freshest of the sampled and header readings, with windows that have
 // since reset counted as empty.
 func (p *claudePoolState) readingLocked(auth *Auth, now time.Time) PoolReading {
@@ -260,10 +302,17 @@ type PoolRow struct {
 	SignInExpires string      `json:"signInExpires"`
 	ResetPlan     string      `json:"resetPlan,omitempty"`
 	ResetsSpent   []int64     `json:"resetsSpent,omitempty"`
-	auth          *Auth
-	five, week    float64
-	weekCutoff    float64
-	settling      bool
+	// Fable's own weekly allowance, when it was read (unix ms), and its size as a fraction
+	// of the week. A Fable request needs room in both it and the week.
+	Fable      *PoolWindow `json:"fable"`
+	FableAt    int64       `json:"fableAt"`
+	FableShare float64     `json:"fableShare"`
+	auth       *Auth
+	five, week float64
+	fable      float64
+	weekCutoff float64
+	weekRoom   float64
+	settling   bool
 }
 
 // workingLocked counts the account's working sessions, and their five-hour load with
@@ -301,7 +350,9 @@ func nextReset(at int64, now time.Time, period time.Duration) int64 {
 // the most five-hour room per working session. With nothing open, the most real room wins.
 // Room is shared by load, the weighted working sessions plus the incoming one's weight; an
 // account whose plan has no five-hour limit, like a verified Ultra one, counts sessions alike.
-func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float64) []PoolRow {
+// For a Fable model, the weekly room is the lesser of the week's and Fable's own allowance's,
+// so Fable work goes to accounts with Fable left before Anthropic refuses it.
+func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float64, model string) []PoolRow {
 	cfg := p.cfg
 	rows := make([]PoolRow, 0, len(auths))
 	for _, auth := range auths {
@@ -327,6 +378,14 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 			row.week = r.Week.Used
 		}
 		row.Known = r.At > 0
+		p.fableLocked(auth)
+		if a.fable != nil {
+			row.Fable, row.FableAt, row.FableShare = a.fable, a.fableAt, a.fableShare
+			if a.fable.ResetsAt > 0 && a.fable.ResetsAt <= now.UnixMilli() {
+				row.Fable = &PoolWindow{Used: 0}
+			}
+			row.fable = row.Fable.Used
+		}
 		for _, reset := range a.resets {
 			if reset.Weekly && reset.Left > 0 && !reset.Paused && (reset.ExpiresAt == nil || *reset.ExpiresAt > now.UnixMilli()) {
 				row.HoldsReset = true
@@ -340,6 +399,11 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 			}
 		}
 		fiveRoom, weekRoom := cfg.SessionCutoff-row.five, row.weekCutoff-row.week
+		fable := isFable(model)
+		if fable {
+			weekRoom = min(weekRoom, cfg.WeeklyCutoff-row.fable)
+		}
+		row.weekRoom = weekRoom
 		row.Usable = fiveRoom > 0 && weekRoom > 0 && !a.needsReauth
 		row.Room = fiveRoom / (load + incoming)
 		var weekReset int64
@@ -352,7 +416,7 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 		row.WeekResetsAt = weekReset
 		row.Urgency = weekRoom / math.Max(1, float64(weekReset-now.UnixMilli())/3.6e6)
 		row.Comfortable = row.Room >= cfg.SessionCutoff/float64(cfg.AgentsPerAccount) && weekRoom >= 5
-		row.Open = row.five < 100 && row.week < 100 && !a.needsReauth
+		row.Open = row.five < 100 && row.week < 100 && !(fable && row.fable >= 100) && !a.needsReauth
 		if fiveRoom <= 0 && r.FiveHour != nil {
 			row.FreeAt = nextReset(r.FiveHour.ResetsAt, now, 5*time.Hour)
 		}
@@ -400,7 +464,7 @@ func (s *QuotaSelector) Pick(ctx context.Context, provider, model string, opts c
 		return nil, err
 	}
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked(available, time.Now(), claudePool.sessionWeight(opts.Headers))
+	rows := claudePool.rankLocked(available, time.Now(), claudePool.sessionWeight(opts.Headers), model)
 	claudePool.mu.Unlock()
 	if len(rows) > 0 {
 		return rows[0].auth, nil
@@ -411,13 +475,13 @@ func (s *QuotaSelector) Pick(ctx context.Context, provider, model string, opts c
 // poolAfterPick moves a session off an account nearing a cutoff when another account is
 // clear, then records which account the session runs on. pick reruns the affinity
 // selector, which rebinds the session once its bound account is left out.
-func poolAfterPick(opts cliproxyexecutor.Options, auths []*Auth, auth *Auth, quota bool, pick func([]*Auth) (*Auth, error)) *Auth {
+func poolAfterPick(opts cliproxyexecutor.Options, model string, auths []*Auth, auth *Auth, quota bool, pick func([]*Auth) (*Auth, error)) *Auth {
 	if !isClaudeAuth(auth) {
 		return auth
 	}
 	cause := "limit"
 	if quota {
-		if rest, level := claudePool.moveAway(auth, auths, opts.Headers); rest != nil {
+		if rest, level := claudePool.moveAway(auth, auths, opts.Headers, model); rest != nil {
 			if moved, err := pick(rest); err == nil && moved != nil {
 				log.Infof("pool: moving session off %s, nearing its limits, to %s", metaString(auth, "email"), metaString(moved, "email"))
 				auth, cause = moved, level
@@ -430,14 +494,15 @@ func poolAfterPick(opts cliproxyexecutor.Options, auths []*Auth, auth *Auth, quo
 
 // moveAway returns the other accounts and "over" (past a cutoff) or "early" (nearing one)
 // when the session should leave auth for a clearer account. An Agent SDK session nears the
-// five-hour cutoff faster, so its margin before the cutoff is wider by the same factor.
-func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Header) ([]*Auth, string) {
+// five-hour cutoff faster, so its margin before the cutoff is wider by the same factor. A
+// Fable session leaves an account whose Fable allowance runs out the same way.
+func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Header, model string) ([]*Auth, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cfg, now, weight := p.cfg, time.Now(), p.sessionWeight(headers)
-	rows := p.rankLocked(auths, now, weight)
+	rows := p.rankLocked(auths, now, weight, model)
 	calm := func(r PoolRow) bool {
-		return r.Usable && r.Comfortable && r.five < cfg.SessionCutoff-poolMargin && r.weekCutoff-r.week >= 5
+		return r.Usable && r.Comfortable && r.five < cfg.SessionCutoff-poolMargin && r.weekRoom >= 5
 	}
 	var mine *PoolRow
 	for i := range rows {
@@ -449,7 +514,7 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Heade
 		return nil, ""
 	}
 	urgent := !mine.Usable
-	soon := mine.five >= cfg.SessionCutoff-poolMargin*weight || mine.weekCutoff-mine.week < 5
+	soon := mine.five >= cfg.SessionCutoff-poolMargin*weight || mine.weekRoom < 5
 	if !urgent && !soon {
 		return nil, ""
 	}
@@ -597,6 +662,7 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 		if h := headerReading(auth); h.At > a.reading.At {
 			a.reading, _ = a.settled(h, now)
 		}
+		p.fableLocked(auth)
 		p.logReadingLocked(id, a.reading)
 		if a.retryAt > now.UnixMilli() {
 			continue
@@ -660,6 +726,20 @@ func (p *claudePoolState) readUsage(ctx context.Context, account, token string, 
 			Available bool    `json:"available"`
 			NextAt    *string `json:"next_available_at"`
 		} `json:"juniper_tide"`
+		Limits []struct {
+			Kind     string   `json:"kind"`
+			Percent  *float64 `json:"percent"`
+			ResetsAt *string  `json:"resets_at"`
+			Scope    *struct {
+				Model *struct {
+					Name string `json:"display_name"`
+				} `json:"model"`
+			} `json:"scope"`
+		} `json:"limits"`
+		Shares []struct {
+			Limit     int     `json:"limit_index"`
+			Allowance float64 `json:"allowance_percent_of_weekly"`
+		} `json:"weekly_scoped_shares"`
 	}
 	status, retry := p.get(ctx, token, "/api/oauth/usage?cedar_ember=1&at_wall=1&skip_spend=1", &body)
 	p.mu.Lock()
@@ -677,11 +757,29 @@ func (p *claudePoolState) readUsage(ctx context.Context, account, token string, 
 		a.reading, stale = a.settled(PoolReading{FiveHour: body.FiveHour.window(), Week: body.SevenDay.window(), At: now.UnixMilli()}, now)
 		p.logReadingLocked(account, a.reading)
 		if !stale {
+			for i, l := range body.Limits {
+				if l.Kind != "weekly_scoped" || l.Percent == nil || l.Scope == nil || l.Scope.Model == nil || !isFable(l.Scope.Model.Name) {
+					continue
+				}
+				a.fable, a.fableAt = &PoolWindow{Used: *l.Percent}, now.UnixMilli()
+				if at := isoMillis(l.ResetsAt); at != nil {
+					a.fable.ResetsAt = *at
+				}
+				for _, share := range body.Shares {
+					if share.Limit == i && share.Allowance > 0 {
+						a.fableShare = share.Allowance / 100
+					}
+				}
+			}
 			a.resets = []PoolReset{}
 			if body.Cedar != nil {
 				for _, g := range body.Cedar.Grants {
 					if left, _ := g["resets_left"].(float64); left > 0 {
-						a.resets = append(a.resets, grantReset(g, int(left)))
+						r := grantReset(g, int(left))
+						if r.Fable {
+							r.Share = a.fableShare
+						}
+						a.resets = append(a.resets, r)
 					}
 				}
 			}
@@ -869,13 +967,13 @@ func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 		}
 	}
 	now := time.Now()
-	rows := claudePool.rankLocked(enabled, now, 1)
+	rows := claudePool.rankLocked(enabled, now, 1, "")
 	for _, plan := range claudePool.planResetsLocked(rows, now) {
 		plan.row.ResetPlan = plan.plan
 	}
 	for _, a := range auths {
 		if a.Disabled && isClaudeAuth(a) {
-			rows = append(rows, claudePool.rankLocked([]*Auth{a}, now, 1)...)
+			rows = append(rows, claudePool.rankLocked([]*Auth{a}, now, 1, "")...)
 		}
 	}
 	spent := claudePool.spentLocked()

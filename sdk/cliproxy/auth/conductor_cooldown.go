@@ -1368,6 +1368,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			}
+			claudePool.observeFable(auth)
 		}
 
 		_ = m.persistLocked(ctx, auth)

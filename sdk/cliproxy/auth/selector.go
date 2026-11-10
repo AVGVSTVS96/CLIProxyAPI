@@ -1104,7 +1104,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		return auth, err
 	}
 	_, quota := s.fallback.(*QuotaSelector)
-	return poolAfterPick(opts, auths, auth, quota, func(rest []*Auth) (*Auth, error) { return s.pick(ctx, provider, model, opts, rest) }), nil
+	return poolAfterPick(opts, model, auths, auth, quota, func(rest []*Auth) (*Auth, error) { return s.pick(ctx, provider, model, opts, rest) }), nil
 }
 
 func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
