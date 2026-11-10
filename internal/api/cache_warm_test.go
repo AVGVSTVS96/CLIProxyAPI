@@ -66,8 +66,11 @@ func newCacheWarmTest(t *testing.T, status string, job ...string) (*gin.Engine, 
 	return engine, upstream
 }
 
-func sendCacheWarmTest(engine *gin.Engine, agent string) {
-	body := `{"model":"m","max_tokens":64000,"stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`
+func sendCacheWarmTest(engine *gin.Engine, agent string, tools ...string) {
+	if len(tools) == 0 {
+		tools = []string{`[{"name":"a"},{"name":"b"}]`}
+	}
+	body := `{"model":"m","max_tokens":64000,"stream":true,"tools":` + tools[0] + `,"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	request.Header.Set("X-Claude-Code-Session-Id", "s1-session")
 	if agent != "" {
@@ -173,5 +176,17 @@ func TestCacheWarmSeesAJobThatTurnsBlocked(t *testing.T) {
 
 	if n := len(upstream.seen()); n != 1 {
 		t.Fatalf("a session that turned to waiting on its owner should cool, got %d requests", n)
+	}
+}
+
+func TestCacheWarmKeepsTheMainConversationOverASideQuery(t *testing.T) {
+	engine, upstream := newCacheWarmTest(t, "busy")
+	sendCacheWarmTest(engine, "")
+	sendCacheWarmTest(engine, "", `[]`)
+	time.Sleep(60 * time.Millisecond)
+
+	bodies := upstream.seen()
+	if len(bodies) < 3 || gjson.Get(bodies[2], "tools.#").Int() != 2 {
+		t.Fatalf("the touch should replay the main conversation, not the side query")
 	}
 }

@@ -160,7 +160,7 @@ func (w *cacheWarmer) keep(session string, header http.Header, body []byte, sent
 	defer w.mu.Unlock()
 
 	entry := w.entries[session]
-	if entry != nil && entry.sentAt.After(sentAt) {
+	if entry != nil && (entry.sentAt.After(sentAt) || sideQuery(body, entry.body)) {
 		return
 	}
 	if entry == nil {
@@ -171,6 +171,12 @@ func (w *cacheWarmer) keep(session string, header http.Header, body []byte, sent
 	}
 	entry.header, entry.body, entry.sentAt, entry.touches = header, body, sentAt, 0
 	entry.timer = time.AfterFunc(time.Until(sentAt.Add(w.after)), func() { w.touch(session, sentAt) })
+}
+
+// Claude Code's side queries, like a title or a prompt suggestion, carry the session's
+// header but few or none of its tools, and keep little of the conversation in the cache.
+func sideQuery(body, main []byte) bool {
+	return gjson.GetBytes(body, "tools.#").Int()*2 < gjson.GetBytes(main, "tools.#").Int()
 }
 
 func (w *cacheWarmer) touch(session string, due time.Time) {
