@@ -50,6 +50,9 @@ type Server struct {
 	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
 	listenerMu      sync.Mutex
 	muxBaseListener net.Listener
+	// cacheWarmer keeps waiting Claude Code sessions' prompt caches warm; nil when off.
+	cacheWarmer *cacheWarmer
+
 	// rawListener is the TCP socket under any TLS wrapper, which a reload hands to the new process.
 	rawListener net.Listener
 	// routing counts accepted connections not yet handed to the HTTP server.

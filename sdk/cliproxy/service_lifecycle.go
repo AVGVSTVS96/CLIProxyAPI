@@ -167,6 +167,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	if !handoff.Inherited() {
+		s.server.RestoreCacheWarm()
+	}
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.configRuntimeMu.Lock()
@@ -269,7 +272,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	if handoff.Inherited() {
-		if errTakeover := handoff.Complete(s.restoreSessionBindings); errTakeover != nil {
+		if errTakeover := handoff.Complete(s.restoreRunState); errTakeover != nil {
 			return fmt.Errorf("take over from the old process: %w", errTakeover)
 		}
 		log.Info("handoff: took over the listening socket from the old process")
@@ -314,7 +317,7 @@ func (s *Service) handOff() error {
 		return errReady
 	}
 	s.server.StopAccepting()
-	s.saveSessionBindings()
+	s.saveRunState()
 	s.handedOver = true
 	if errCommit := successor.Commit(); errCommit != nil {
 		log.Errorf("handoff: new process failed while taking over (%v); systemd restarts the service", errCommit)
@@ -459,7 +462,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 		if !s.handedOver {
-			s.saveSessionBindings()
+			s.saveRunState()
 		}
 
 		if s.pluginHost != nil {
@@ -522,6 +525,19 @@ func (s *Service) startModelCatalogUpdaters(ctx context.Context) {
 		proxyURL = cfg.ProxyURL
 	}
 	executor.StartXAIVersionUpdater(ctx, proxyURL)
+}
+
+// restoreRunState picks up what the last run handed over: session bindings and the
+// sessions it was keeping warm.
+func (s *Service) restoreRunState() {
+	s.restoreSessionBindings()
+	s.server.RestoreCacheWarm()
+}
+
+// saveRunState hands session bindings and the sessions being kept warm to the next run.
+func (s *Service) saveRunState() {
+	s.saveSessionBindings()
+	s.server.SaveCacheWarm()
 }
 
 func (s *Service) restoreSessionBindings() {

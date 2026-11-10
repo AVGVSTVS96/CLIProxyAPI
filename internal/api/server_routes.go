@@ -83,7 +83,8 @@ func (s *Server) setupRoutes() {
 		v1.POST("/audio/speech", openaiHandlers.AudioSpeech)
 		v1.POST("/tts", openaiHandlers.XAITTS)
 		if s.cfg.Routing.CacheWarm {
-			v1.POST("/messages", newCacheWarmer(s.engine).record, claudeCodeHandlers.ClaudeMessages)
+			s.cacheWarmer = newCacheWarmer(s.engine, s.cfg.Routing.Pool.StateDir)
+			v1.POST("/messages", s.cacheWarmer.record, claudeCodeHandlers.ClaudeMessages)
 		} else {
 			v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		}
