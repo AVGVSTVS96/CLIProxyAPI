@@ -488,6 +488,11 @@ type RoutingConfig struct {
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
 
+	// CacheWarm keeps a Claude Code session's main conversation in the one-hour prompt cache
+	// while Claude Code reports the session busy, by replaying its last request for one token
+	// shortly before the cache would expire.
+	CacheWarm bool `yaml:"cache-warm,omitempty" json:"cache-warm,omitempty"`
+
 	// Pool tunes the "quota" strategy for Claude subscriptions.
 	Pool PoolConfig `yaml:"pool,omitempty" json:"pool,omitempty"`
 }
