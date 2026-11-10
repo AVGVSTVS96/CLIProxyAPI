@@ -117,7 +117,11 @@ func (s *Server) acceptMuxConnections(listener net.Listener, httpListener *muxLi
 		// reader.Peek(1) were performed inline; an idle TCP connection that
 		// never sent bytes would block Peek indefinitely, preventing all
 		// subsequent connections from being accepted (issue #3267).
-		go s.routeMuxConnection(conn, httpListener)
+		s.routing.Add(1)
+		go func() {
+			defer s.routing.Done()
+			s.routeMuxConnection(conn, httpListener)
+		}()
 	}
 }
 

@@ -50,6 +50,13 @@ type Server struct {
 	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
 	listenerMu      sync.Mutex
 	muxBaseListener net.Listener
+	// rawListener is the TCP socket under any TLS wrapper, which a reload hands to the new process.
+	rawListener net.Listener
+	// routing counts accepted connections not yet handed to the HTTP server.
+	routing sync.WaitGroup
+	// handingOver is set once a reload stops this process accepting; the HTTP side stays
+	// open so connections it already accepted are still served.
+	handingOver atomic.Bool
 
 	// muxHTTPListener receives HTTP connections selected by the multiplexer.
 	muxHTTPListener *muxListener
@@ -314,6 +321,7 @@ func (s *Server) Start() error {
 	if errListen != nil {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
+	rawListener := listener
 
 	cfg := s.getConfig()
 	useTLS := cfg != nil && cfg.TLS.Enable
@@ -350,6 +358,7 @@ func (s *Server) Start() error {
 
 	httpListener := newMuxListener(listener.Addr(), 1024)
 	s.listenerMu.Lock()
+	s.rawListener = rawListener
 	s.muxBaseListener = listener
 	s.muxHTTPListener = httpListener
 	s.listenerMu.Unlock()
@@ -391,6 +400,9 @@ func (s *Server) Start() error {
 		}
 		return nil
 	case errAccept := <-acceptErrCh:
+		if s.handingOver.Load() {
+			return normalizeHTTPServeError(<-httpErrCh)
+		}
 		s.listenerMu.Lock()
 		muxHTTP := s.muxHTTPListener
 		muxBase := s.muxBaseListener
@@ -415,6 +427,38 @@ func (s *Server) Start() error {
 			return fmt.Errorf("failed to start HTTP server: %v", errServe)
 		}
 		return nil
+	}
+}
+
+// ListenerFile returns a duplicate of the listening socket for a process taking over.
+func (s *Server) ListenerFile() (*os.File, error) {
+	s.listenerMu.Lock()
+	listener := s.rawListener
+	s.listenerMu.Unlock()
+	filer, ok := listener.(interface{ File() (*os.File, error) })
+	if !ok {
+		return nil, fmt.Errorf("listener %T cannot be handed over", listener)
+	}
+	return filer.File()
+}
+
+// StopAccepting closes this process's copy of the listening socket, leaving requests
+// already in flight running and the socket open for whoever else holds it.
+func (s *Server) StopAccepting() {
+	s.handingOver.Store(true)
+	s.listenerMu.Lock()
+	base := s.muxBaseListener
+	httpListener := s.muxHTTPListener
+	s.muxBaseListener = nil
+	s.listenerMu.Unlock()
+	if base != nil {
+		if errClose := base.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			log.Debugf("failed to close listener for handoff: %v", errClose)
+		}
+	}
+	s.routing.Wait()
+	if httpListener != nil {
+		httpListener.waitTaken(muxSniffDeadline)
 	}
 }
 

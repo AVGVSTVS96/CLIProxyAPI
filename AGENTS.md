@@ -15,6 +15,7 @@ go test -v -run TestName ./path/to/pkg # Run single test
 go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
+- Swap the running binary with `systemctl --user reload cliproxyapi` after installing it (previous one kept as `cliproxyapi.prev`): the new process takes the socket and session bindings at once while the old one finishes its in-flight requests. `restart` makes every client wait for the slowest request.
 
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)

@@ -141,3 +141,11 @@ func (l *muxListener) Addr() net.Addr {
 	}
 	return l.addr
 }
+
+// waitTaken waits, up to limit, until the HTTP server has taken every queued connection.
+func (l *muxListener) waitTaken(limit time.Duration) {
+	deadline := time.Now().Add(limit)
+	for len(l.connCh) > 0 && !l.isClosed() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+}

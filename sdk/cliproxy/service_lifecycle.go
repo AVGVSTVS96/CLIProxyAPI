@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/handoff"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -103,7 +104,9 @@ func (s *Service) Run(ctx context.Context) error {
 		// live requests with "unknown provider" while the watcher catches up.
 		s.registerModelsForAuthBatch(ctx, s.coreManager.List())
 		s.coreManager.RefreshSchedulerAll()
-		s.restoreSessionBindings()
+		if !handoff.Inherited() {
+			s.restoreSessionBindings()
+		}
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
@@ -261,13 +264,60 @@ func (s *Service) Run(ctx context.Context) error {
 		go s.runAntigravityModelRefresh(ctx)
 	}
 
-	select {
-	case <-ctx.Done():
-		log.Debug("service context cancelled, shutting down...")
-		return ctx.Err()
-	case errServer := <-s.serverErr:
-		return errServer
+	if handoff.Inherited() {
+		if errTakeover := handoff.Complete(s.restoreSessionBindings); errTakeover != nil {
+			return fmt.Errorf("take over from the old process: %w", errTakeover)
+		}
+		log.Info("handoff: took over the listening socket from the old process")
 	}
+
+	reloads := handoff.Requests()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Debug("service context cancelled, shutting down...")
+			return ctx.Err()
+		case errServer := <-s.serverErr:
+			return errServer
+		case <-reloads:
+			if errHandOff := s.handOff(); errHandOff != nil {
+				log.Errorf("handoff: %v; this process keeps serving", errHandOff)
+				continue
+			}
+			return nil
+		}
+	}
+}
+
+// handOff starts the binary on disk, lets it take the listening socket once it is fully
+// up, then returns so this process finishes its in-flight requests and exits.
+func (s *Service) handOff() error {
+	if s.server == nil {
+		return errors.New("no server to hand over")
+	}
+	file, errFile := s.server.ListenerFile()
+	if errFile != nil {
+		return errFile
+	}
+	successor, errBegin := handoff.Begin(file)
+	_ = file.Close()
+	if errBegin != nil {
+		return errBegin
+	}
+	log.Info("handoff: started the new process")
+	if errReady := successor.Ready(2 * time.Minute); errReady != nil {
+		successor.Abort()
+		return errReady
+	}
+	s.server.StopAccepting()
+	s.saveSessionBindings()
+	s.bindingsHandedOver = true
+	if errCommit := successor.Commit(); errCommit != nil {
+		log.Errorf("handoff: new process failed while taking over (%v); systemd restarts the service", errCommit)
+	} else {
+		log.Info("handoff: new process serves; finishing in-flight requests")
+	}
+	return nil
 }
 
 // shutdownDrain bounds how long a stop waits for in-flight requests, such as long model
@@ -400,7 +450,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 		}
-		s.saveSessionBindings()
+		if !s.bindingsHandedOver {
+			s.saveSessionBindings()
+		}
 
 		if s.pluginHost != nil {
 			sdktranslator.SetPluginHooks(nil)

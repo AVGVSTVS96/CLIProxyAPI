@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"syscall"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/handoff"
 )
 
 // socketActivated reports whether systemd passed this process one listening socket (fd 3).
@@ -24,6 +26,9 @@ func init() {
 // listen takes the socket systemd passes in when started by a socket unit, so a restart
 // queues new connections in the kernel instead of refusing them; otherwise it opens addr.
 func listen(addr string) (net.Listener, error) {
+	if handoff.Inherited() {
+		return handoff.Listener()
+	}
 	if !socketActivated() {
 		return net.Listen("tcp", addr)
 	}
