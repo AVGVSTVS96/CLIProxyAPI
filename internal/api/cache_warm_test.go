@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -208,8 +209,8 @@ func TestCacheWarmKeepsTheMainConversationOverASideQuery(t *testing.T) {
 
 func TestCacheWarmTouchesSessionWhileAnAgentItStartedRuns(t *testing.T) {
 	engine, upstream := newCacheWarmTest(t, "idle")
-	writeCacheWarmSession(t, 1, "s1-session", "BROADCOM", "idle")
-	writeCacheWarmSession(t, os.Getpid(), "agent-session", "BROADCOM/keep-warm", "busy")
+	writeCacheWarmSession(t, 1, "s1-session", "test-topic", "idle")
+	writeCacheWarmSession(t, os.Getpid(), "agent-session", "test-topic/keep-warm", "busy")
 	sendCacheWarmTest(engine, "")
 	time.Sleep(80 * time.Millisecond)
 
@@ -220,9 +221,9 @@ func TestCacheWarmTouchesSessionWhileAnAgentItStartedRuns(t *testing.T) {
 
 func TestCacheWarmLetsSessionCoolOnceItsAgentHasExited(t *testing.T) {
 	engine, upstream := newCacheWarmTest(t, "idle")
-	writeCacheWarmSession(t, 1, "s1-session", "BROADCOM", "idle")
-	writeCacheWarmSession(t, 0, "agent-session", "BROADCOM/keep-warm", "busy")
-	writeCacheWarmSession(t, os.Getpid(), "other-session", "BROADCOMX/agent", "busy")
+	writeCacheWarmSession(t, 1, "s1-session", "test-topic", "idle")
+	writeCacheWarmSession(t, 0, "agent-session", "test-topic/keep-warm", "busy")
+	writeCacheWarmSession(t, os.Getpid(), "other-session", "test-topicx/agent", "busy")
 	sendCacheWarmTest(engine, "")
 	time.Sleep(80 * time.Millisecond)
 
@@ -231,9 +232,49 @@ func TestCacheWarmLetsSessionCoolOnceItsAgentHasExited(t *testing.T) {
 	}
 }
 
+func startCacheWarmJob(t *testing.T, name string) {
+	t.Helper()
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("needs /proc")
+	}
+	job := exec.Command("sleep", "5")
+	job.Env = append(os.Environ(), "CLAUDE_CODE_SESSION_NAME="+name)
+	if err := job.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = job.Process.Kill()
+		_ = job.Wait()
+	})
+}
+
+func TestCacheWarmTouchesSessionWhileAShellJobItStartedRuns(t *testing.T) {
+	engine, upstream := newCacheWarmTest(t, "idle")
+	writeCacheWarmSession(t, 1, "s1-session", "test-topic", "idle")
+	startCacheWarmJob(t, "test-topic/build")
+	sendCacheWarmTest(engine, "")
+	time.Sleep(80 * time.Millisecond)
+
+	if n := len(upstream.seen()); n < 2 {
+		t.Fatalf("a session whose shell job still runs should be touched, got %d requests", n)
+	}
+}
+
+func TestCacheWarmLetsSessionCoolWhileOnlyAnotherSessionsJobRuns(t *testing.T) {
+	engine, upstream := newCacheWarmTest(t, "idle")
+	writeCacheWarmSession(t, 1, "s1-session", "test-topic", "idle")
+	startCacheWarmJob(t, "test-topicx/build")
+	sendCacheWarmTest(engine, "")
+	time.Sleep(80 * time.Millisecond)
+
+	if n := len(upstream.seen()); n != 1 {
+		t.Fatalf("another session's job should not keep this one warm, got %d requests", n)
+	}
+}
+
 func TestCacheWarmFindsTheNameOfAStoppedSessionInItsJob(t *testing.T) {
 	engine, upstream := newCacheWarmTest(t, "idle", "stopped")
-	stopped := `{"sessionId":"s1-session","state":"stopped","name":"BROADCOM"}`
+	stopped := `{"sessionId":"s1-session","state":"stopped","name":"test-topic"}`
 	file := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "jobs", "s1-sessi", "state.json")
 	if err := os.WriteFile(file, []byte(stopped), 0o600); err != nil {
 		t.Fatal(err)
@@ -241,7 +282,7 @@ func TestCacheWarmFindsTheNameOfAStoppedSessionInItsJob(t *testing.T) {
 	if err := os.Remove(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "sessions", "1.json")); err != nil {
 		t.Fatal(err)
 	}
-	writeCacheWarmSession(t, os.Getpid(), "agent-session", "BROADCOM/keep-warm", "busy")
+	writeCacheWarmSession(t, os.Getpid(), "agent-session", "test-topic/keep-warm", "busy")
 	time.Sleep(20 * time.Millisecond)
 	sendCacheWarmTest(engine, "")
 	time.Sleep(80 * time.Millisecond)

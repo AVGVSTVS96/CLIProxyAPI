@@ -340,8 +340,8 @@ func (w *cacheWarmer) send(header http.Header, body []byte) (read, written int64
 }
 
 // working must be called with w.mu held. A session counts as working while Claude Code
-// shows it busy, its background job last said it was working, or an agent it started
-// (a live session named "<its name>/...") still runs.
+// shows it busy, its background job last said it was working, or an agent or shell job
+// it started (a live session or process named "<its name>/...") still runs.
 func (w *cacheWarmer) working(session string) bool {
 	if w.reported[session] == "working" {
 		return true
@@ -369,6 +369,23 @@ func (w *cacheWarmer) working(session string) bool {
 	}
 	for _, state := range running {
 		if strings.HasPrefix(state.Name, name+"/") {
+			return true
+		}
+	}
+	return jobRunning(name)
+}
+
+// jobRunning finds a live process of a job the named session started. hex runs each job,
+// a build or an agent alike, with CLAUDE_CODE_SESSION_NAME set to "<session name>/<job>".
+func jobRunning(name string) bool {
+	want := []byte("\x00CLAUDE_CODE_SESSION_NAME=" + name + "/")
+	pids, _ := os.ReadDir("/proc")
+	for _, pid := range pids {
+		if pid.Name()[0] < '0' || pid.Name()[0] > '9' {
+			continue
+		}
+		env, err := os.ReadFile(filepath.Join("/proc", pid.Name(), "environ"))
+		if err == nil && bytes.Contains(append([]byte{0}, env...), want) {
 			return true
 		}
 	}
