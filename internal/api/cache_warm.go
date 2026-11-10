@@ -136,6 +136,7 @@ func (w *cacheWarmer) touch(session string, due time.Time) {
 	if entry.touches >= cacheWarmMaxTouches || !w.working(session) {
 		delete(w.entries, session)
 		w.mu.Unlock()
+		log.Infof("cache warm: session %s left to cool after %d touches", session, entry.touches)
 		return
 	}
 	header, body := entry.header, entry.body
