@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,13 +19,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// A held weekly reset zeroes an account's week; a Fable reset zeroes Fable's own allowance and
-// gives back to the week only what Fable used in it. The pool spends a weekly reset the moment
-// every Claude account has used its week, and a Fable reset the moment none has Fable left:
-// before that, the room it gives would only stand in for room other accounts already have,
-// which then goes unused. A reset refills the week without moving its end, and what is left at
-// the end is lost, so one reset is spent per dry spell: the one that gives back the most, then
-// the one whose account's week ends last. One whose own week ends within poolRunway is kept,
+// A held weekly reset zeroes an account's week and Fable's allowance in it; a Fable reset zeroes
+// Fable's own allowance and gives back to the week only what Fable used in it. The pool spends a
+// weekly reset the moment every Claude account has used its week, and a Fable reset, or a weekly
+// one whose own week is used, the moment none has Fable left: before that, the room it gives
+// would only stand in for room other accounts already have, which then goes unused. A reset
+// refills the week without moving its end, and what is left at the end is lost, so one reset is
+// spent per dry spell: the one that gives back the most, then the one whose account's week ends
+// last. One whose own week ends within poolRunway is kept,
 // unless it expires within poolLastWeek. A reset in its last poolLastHour is spent whatever the
 // pool holds.
 //
@@ -179,7 +181,7 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 		h := &holders[i]
 		left := h.grant.left(now)
 		waiting, used := busy, "week"
-		if h.grant.Fable && len(busy) > 0 {
+		if len(busy) > 0 && (h.grant.Fable || h.row.week >= h.row.weekCutoff) {
 			waiting, used = fableBusy, "week or Fable allowance"
 		}
 		switch {
@@ -321,9 +323,11 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 		if at := isoMillis(out.WeeklyResetsAt); at != nil {
 			weekEnds = *at
 		}
+		fableCleared := plan.grant.Fable || slices.Contains(out.Cleared, "seven_day_overage_included")
 		if !plan.grant.Fable {
 			a.reading = PoolReading{FiveHour: plan.row.Reading.FiveHour, Week: &PoolWindow{Used: 0, ResetsAt: weekEnds}, At: now.UnixMilli()}
-		} else if a.fable != nil {
+		}
+		if fableCleared && a.fable != nil {
 			a.fable, a.fableAt = &PoolWindow{Used: 0, ResetsAt: a.fable.ResetsAt}, now.UnixMilli()
 		}
 		a.spent = &poolSpent{week: plan.row.week, weekEnds: weekEnds, until: now.Add(poolSettle).UnixMilli(), fable: plan.grant.Fable}
@@ -335,7 +339,7 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 					g.Left = *out.ResetsLeft
 				}
 			}
-			if plan.grant.Fable && g.Fable {
+			if fableCleared && g.Fable {
 				g.FableUsed = 0
 			}
 			if g.Left > 0 {

@@ -161,7 +161,7 @@ func (f *resetAPI) RoundTrip(req *http.Request) (*http.Response, error) {
 		if len(f.answers) > 0 {
 			status, f.answers = f.answers[0], f.answers[1:]
 		}
-		body = `{"result":"reset","resets_left":1,"cleared":["seven_day"],"weekly_resets_at":"2030-01-01T00:00:00Z"}`
+		body = `{"result":"reset","resets_left":1,"cleared":["seven_day","seven_day_overage_included"],"weekly_resets_at":"2030-01-01T00:00:00Z"}`
 	case req.URL.Path == "/api/oauth/usage":
 		body = f.usage
 	}
@@ -402,5 +402,46 @@ func TestFableResetWaitsWhileAnotherAccountHasFableLeft(t *testing.T) {
 	holder, b := fableAt(poolAuth("holder", 0, 70, 60*time.Hour), 100), fableAt(poolAuth("b", 0, 40, 62*time.Hour), 60)
 	if plan := planFor(holder, b); plan.why != "" || !strings.Contains(plan.plan, "b@example.com has used its week or Fable allowance") {
 		t.Fatalf("plan = %+v, want it kept while b has Fable left", plan)
+	}
+}
+
+func TestWeeklySpendClearsFableToo(t *testing.T) {
+	api := &resetAPI{usage: staleUsage}
+	_, auths := dryPool(t, api)
+	fableAt(auths[0], 100)
+	expires := time.Now().Add(120 * 24 * time.Hour).UnixMilli()
+	a := claudePool.account("holder")
+	a.resets = append(a.resets, PoolReset{ID: "launch-fable", Kind: "fable", Left: 1, ExpiresAt: &expires, Fable: true, FableUsed: 100, UsableNow: true})
+	claudePool.spendReset(context.Background(), nil, auths, time.Now())
+	claudePool.mu.Lock()
+	rows := claudePool.rankLocked(auths, time.Now(), 1, "claude-fable-5-2")
+	claudePool.mu.Unlock()
+	for _, r := range rows {
+		if r.Account != "holder" {
+			continue
+		}
+		if !r.Usable || r.Fable == nil || r.Fable.Used != 0 {
+			t.Fatalf("row = %+v, want Fable work back on holder once its weekly reset cleared Fable too", r)
+		}
+		for _, g := range r.Resets {
+			if g.Fable && g.FableUsed != 0 {
+				t.Fatalf("resets = %+v, want the Fable reset giving back nothing until Fable is used again", r.Resets)
+			}
+		}
+	}
+}
+
+func TestWeeklyResetSpendsOnceNoAccountHasFableLeft(t *testing.T) {
+	resetPool(t)
+	holdReset("holder", 40*24*time.Hour)
+	holder, b := fableAt(poolAuth("holder", 0, 100, 60*time.Hour), 70), fableAt(poolAuth("b", 0, 60, 62*time.Hour), 100)
+	if plan := planFor(holder, b); plan.why == "" || !strings.Contains(plan.why, "Fable allowance") {
+		t.Fatalf("plan = %+v, want it spent: Fable work has nowhere left to go and holder's week is used", plan)
+	}
+	resetPool(t)
+	holdReset("holder", 40*24*time.Hour)
+	holder, b = fableAt(poolAuth("holder", 0, 100, 60*time.Hour), 70), fableAt(poolAuth("b", 0, 60, 62*time.Hour), 40)
+	if plan := planFor(holder, b); plan.why != "" {
+		t.Fatalf("plan = %+v, want it kept while b can still take Fable work", plan)
 	}
 }
