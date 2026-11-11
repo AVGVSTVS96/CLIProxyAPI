@@ -26,6 +26,8 @@ type HeldReset struct {
 	Kind      string `json:"kind"`
 	Left      int    `json:"left"`
 	ExpiresAt *int64 `json:"expiresAt"`
+	// Weekly is set on a reset that gives the account a whole fresh week.
+	Weekly bool `json:"weekly"`
 	// Weekly points spending it now would give back.
 	GivesBack float64 `json:"givesBack"`
 }
@@ -228,7 +230,7 @@ func parsePool(snap coreauth.PoolSnapshot, revision string, seats []seat) *poolS
 			week = a.Reading.Week.Used
 		}
 		for _, r := range a.Resets {
-			account.HeldResets = append(account.HeldResets, HeldReset{Kind: r.Kind, Left: r.Left, ExpiresAt: r.ExpiresAt, GivesBack: math.Round(r.GivesBack(week))})
+			account.HeldResets = append(account.HeldResets, HeldReset{Kind: r.Kind, Left: r.Left, ExpiresAt: r.ExpiresAt, Weekly: r.Weekly, GivesBack: math.Round(r.GivesBack(week))})
 		}
 		state.accounts = append(state.accounts, account)
 	}

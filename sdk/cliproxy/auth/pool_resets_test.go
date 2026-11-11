@@ -181,7 +181,7 @@ func TestSpendResetClaimsOnceAndTellsTheCommand(t *testing.T) {
 		t.Fatalf("spent = %v, want one reset recorded", spent)
 	}
 	for start := time.Now(); time.Since(start) < 5*time.Second; time.Sleep(20 * time.Millisecond) {
-		if line, _ := os.ReadFile(told); strings.HasPrefix(string(line), "Spent holder@example.com's weekly reset") {
+		if line, _ := os.ReadFile(told); strings.HasPrefix(string(line), "Spent holder@example.com's weekly reset") && strings.HasSuffix(string(line), "1 weekly reset is still held, a fresh week on holder@example.com.") {
 			return
 		}
 	}

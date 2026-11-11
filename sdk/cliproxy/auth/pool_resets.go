@@ -352,6 +352,7 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 		claim.retryAt, claim.told = retry.UnixMilli(), true
 	}
 	p.saveClaimsLocked()
+	held := p.heldWeeklyLocked(auths, now)
 	p.mu.Unlock()
 
 	switch {
@@ -359,7 +360,7 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 		if plan.grant.Fable {
 			tell(fmt.Sprintf("Spent %s's Fable reset: %s. It gives back what Fable used this week, ~%.0f of its %.0f%% week; its week still resets %s.", plan.row.label(), plan.why, plan.grant.GivesBack(plan.row.week), plan.row.week, when(weekEnds)))
 		} else {
-			tell(fmt.Sprintf("Spent %s's weekly reset: %s. Its week is back to 0%%; next weekly reset %s.", plan.row.label(), plan.why, when(weekEnds)))
+			tell(fmt.Sprintf("Spent %s's weekly reset: %s. Its week is back to 0%%; next weekly reset %s. %s", plan.row.label(), plan.why, when(weekEnds), held))
 		}
 	case !told:
 		tell(fmt.Sprintf("Tried to spend %s's %s reset (%s); Anthropic answered %q (%s, HTTP %d). Retrying every few minutes.", plan.row.label(), plan.grant.Kind, plan.why, out.Result, out.Reason, status))
@@ -367,6 +368,32 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 		log.Warnf("pool: reset claim for %s answered %q (%s), status %d", plan.row.label(), out.Result, out.Reason, status)
 	}
 	return spent
+}
+
+// heldWeeklyLocked says how many weekly resets the pool still holds and who holds them, so a
+// spend never reads as the pool running out while fresh weeks remain.
+func (p *claudePoolState) heldWeeklyLocked(auths []*Auth, now time.Time) string {
+	count := 0
+	var holders []string
+	for _, auth := range auths {
+		held := 0
+		for _, g := range p.account(poolAccountID(auth)).resets {
+			if g.Weekly && g.live(now) {
+				held += g.Left
+			}
+		}
+		if held > 0 {
+			count += held
+			holders = append(holders, metaString(auth, "email"))
+		}
+	}
+	switch count {
+	case 0:
+		return "No weekly resets are left."
+	case 1:
+		return "1 weekly reset is still held, a fresh week on " + holders[0] + "."
+	}
+	return fmt.Sprintf("%d weekly resets are still held, a fresh week each, on %s.", count, strings.Join(holders, ", "))
 }
 
 // loadClaimsLocked reads the claims a previous run sent and Anthropic hadn't settled.
