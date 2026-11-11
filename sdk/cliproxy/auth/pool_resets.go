@@ -22,10 +22,11 @@ import (
 // gives back to the week only what Fable used in it. The pool spends a weekly reset the moment
 // every Claude account has used its week, and a Fable reset the moment none has Fable left:
 // before that, the room it gives would only stand in for room other accounts already have,
-// which then goes unused. It waits out a dry spell shorter than
-// poolDrySpell, when a week comes back on its own soon, unless the reset expires within
-// poolLastWeek. One reset is spent per dry spell, the one that gives back the most, then the one
-// whose account's week ends last. A reset in its last poolLastHour is spent whatever the pool holds.
+// which then goes unused. A reset refills the week without moving its end, and what is left at
+// the end is lost, so one reset is spent per dry spell: the one that gives back the most, then
+// the one whose account's week ends last. One whose own week ends within poolRunway is kept,
+// unless it expires within poolLastWeek. A reset in its last poolLastHour is spent whatever the
+// pool holds.
 //
 // Anthropic lets some resets be used only at the weekly limit. Their holder takes new work
 // past the weekly cutoff, up to that limit, so the reset becomes usable; one whose holder
@@ -36,7 +37,7 @@ import (
 // poolClaimsFile, until Anthropic settles it, so retrying it can't spend a second reset.
 
 const (
-	poolDrySpell     = 12 * time.Hour
+	poolRunway       = 12 * time.Hour
 	poolLastWeek     = 7 * 24 * time.Hour
 	poolLastHour     = time.Hour
 	poolFreshResets  = 2 * time.Minute
@@ -135,7 +136,6 @@ func (a *poolAccount) settled(r PoolReading, now time.Time) (PoolReading, bool) 
 func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []poolSpend {
 	var holders []poolSpend
 	var busy, fableBusy []string
-	dryUntil := int64(math.MaxInt64)
 	for i := range rows {
 		r := &rows[i]
 		if r.Disabled || r.NeedsReauth {
@@ -147,7 +147,6 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 		if !r.Known || r.week < r.weekCutoff && r.fable < p.cfg.WeeklyCutoff || r.settling {
 			fableBusy = append(fableBusy, r.label())
 		}
-		dryUntil = min(dryUntil, r.WeekResetsAt)
 		if g, ok := r.nextReset(now); ok {
 			holders = append(holders, poolSpend{row: r, grant: g})
 		}
@@ -176,7 +175,6 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 		spent = true
 	}
 
-	dry := time.Duration(dryUntil-now.UnixMilli()) * time.Millisecond
 	for i := range holders {
 		h := &holders[i]
 		left := h.grant.left(now)
@@ -192,14 +190,14 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 				map[bool]string{true: "has", false: "have"}[one], map[bool]string{true: "its", false: "their"}[one], used)
 		case spent:
 			h.plan = fmt.Sprintf("Every account has used its %s, but another reset is being spent, so this one waits for the next time they all have.", used)
-		case dry >= poolDrySpell:
-			spend(h, fmt.Sprintf("every account had used its %s and none came back before %s", used, when(dryUntil)))
+		case h.row.WeekResetsAt-now.UnixMilli() >= poolRunway.Milliseconds():
+			spend(h, fmt.Sprintf("every account had used its %s", used))
 			spent = true
 		case left < poolLastWeek:
 			spend(h, fmt.Sprintf("every account had used its %s and the reset expires %s", used, when(*h.grant.ExpiresAt)))
 			spent = true
 		default:
-			h.plan = fmt.Sprintf("Every account has used its %s, but one comes back %s, so the reset waits for a longer gap.", used, when(dryUntil))
+			h.plan = fmt.Sprintf("Every account has used its %s, but this one's week comes back %s, too soon to use what the reset gives.", used, when(h.row.WeekResetsAt))
 		}
 		if h.grant.Fable {
 			h.plan = fmt.Sprintf("Fable reset, gives back ~%.0f weekly points (what Fable used this week). %s", h.grant.GivesBack(h.row.week), h.plan)

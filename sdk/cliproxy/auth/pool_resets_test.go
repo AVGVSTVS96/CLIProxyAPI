@@ -55,18 +55,26 @@ func TestResetSpendsTheMomentThePoolRunsDry(t *testing.T) {
 	}
 }
 
-func TestResetWaitsOutAShortDrySpell(t *testing.T) {
+func TestResetSpendsThoughAnotherWeekComesBackSoon(t *testing.T) {
 	resetPool(t)
 	holdReset("holder", 40*24*time.Hour)
-	if plan := planFor(poolAuth("holder", 0, 100, 60*time.Hour), poolAuth("b", 0, 99, 3*time.Hour)); plan.why != "" {
-		t.Fatalf("plan = %+v, want it kept: b's week comes back in 3 hours", plan)
+	if plan := planFor(poolAuth("holder", 0, 100, 60*time.Hour), poolAuth("b", 0, 99, 3*time.Hour)); plan.why == "" {
+		t.Fatalf("plan = %+v, want it spent: the pool is dry and the holder's week has 60 hours to use it", plan)
 	}
 }
 
-func TestResetTakesAShortDrySpellInItsLastWeek(t *testing.T) {
+func TestResetWaitsWhenItsOwnWeekIsAlmostOver(t *testing.T) {
+	resetPool(t)
+	holdReset("holder", 40*24*time.Hour)
+	if plan := planFor(poolAuth("holder", 0, 100, 3*time.Hour), poolAuth("b", 0, 99, 60*time.Hour)); plan.why != "" {
+		t.Fatalf("plan = %+v, want it kept: the holder's week comes back in 3 hours", plan)
+	}
+}
+
+func TestResetIsSpentOnAWeekAlmostOverInItsLastWeek(t *testing.T) {
 	resetPool(t)
 	holdReset("holder", 5*24*time.Hour)
-	if plan := planFor(poolAuth("holder", 0, 100, 60*time.Hour), poolAuth("b", 0, 99, 3*time.Hour)); plan.why == "" {
+	if plan := planFor(poolAuth("holder", 0, 100, 3*time.Hour), poolAuth("b", 0, 99, 60*time.Hour)); plan.why == "" {
 		t.Fatalf("plan = %+v, want it spent before it expires", plan)
 	}
 }
@@ -386,7 +394,12 @@ func TestFableResetSpendsOnceNoAccountHasFableLeft(t *testing.T) {
 	if plan := planFor(holder, b); plan.why == "" || !strings.Contains(plan.why, "Fable allowance") {
 		t.Fatalf("plan = %+v, want it spent: Fable work has nowhere left to go", plan)
 	}
-	b = fableAt(poolAuth("b", 0, 40, 62*time.Hour), 60)
+}
+
+func TestFableResetWaitsWhileAnotherAccountHasFableLeft(t *testing.T) {
+	resetPool(t)
+	holdFableReset("holder", 100)
+	holder, b := fableAt(poolAuth("holder", 0, 70, 60*time.Hour), 100), fableAt(poolAuth("b", 0, 40, 62*time.Hour), 60)
 	if plan := planFor(holder, b); plan.why != "" || !strings.Contains(plan.plan, "b@example.com has used its week or Fable allowance") {
 		t.Fatalf("plan = %+v, want it kept while b has Fable left", plan)
 	}
