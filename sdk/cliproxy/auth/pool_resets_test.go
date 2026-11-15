@@ -55,6 +55,15 @@ func TestResetSpendsTheMomentThePoolRunsDry(t *testing.T) {
 	}
 }
 
+func TestResetSpendsThoughAnAPIKeyHasNoWeek(t *testing.T) {
+	resetPool(t)
+	holdReset("holder", 40*24*time.Hour)
+	key := &Auth{ID: "claude:apikey:abc", Provider: "claude", Attributes: map[string]string{"api_key": "sk-test"}}
+	if plan := planFor(poolAuth("holder", 0, 100, 60*time.Hour), poolAuth("b", 0, 99, 62*time.Hour), key); plan.why == "" {
+		t.Fatalf("plan = %+v, want it spent: an API key has no week to wait for", plan)
+	}
+}
+
 func TestResetSpendsThoughAnotherWeekComesBackSoon(t *testing.T) {
 	resetPool(t)
 	holdReset("holder", 40*24*time.Hour)
