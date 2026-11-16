@@ -16,8 +16,15 @@ type Binding struct {
 	AccountID *string `json:"accountId"`
 	Event     string  `json:"event"`
 	Cause     string  `json:"cause,omitempty"`
+	From      *string `json:"from,omitempty"`
+	Agent     string  `json:"agent,omitempty"`
+	Model     string  `json:"model,omitempty"`
 	millis    float64
 }
+
+// binding names the selector binding a row is for: a session's agent and model, or the
+// whole session in rows written before the pool kept them apart.
+func (b Binding) binding() string { return b.SessionID + "|" + b.Agent + "|" + b.Model }
 
 // LimitReading is one sample of an account's limits (usage-history.ndjson).
 type LimitReading struct {
@@ -109,6 +116,9 @@ func parseBinding(line []byte) (Binding, bool) {
 		AccountID any `json:"accountId"`
 		Event     any `json:"event"`
 		Cause     any `json:"cause"`
+		From      any `json:"from"`
+		Agent     any `json:"agent"`
+		Model     any `json:"model"`
 	}
 	if json.Unmarshal(line, &row) != nil {
 		return Binding{}, false
@@ -125,6 +135,11 @@ func parseBinding(line []byte) (Binding, bool) {
 	}
 	binding := Binding{At: at, SessionID: session, Event: event, millis: millis}
 	binding.Cause, _ = row.Cause.(string)
+	binding.Agent, _ = row.Agent.(string)
+	binding.Model, _ = row.Model.(string)
+	if from, ok := row.From.(string); ok && from != "" {
+		binding.From = &from
+	}
 	switch account := row.AccountID.(type) {
 	case string:
 		binding.AccountID = &account
@@ -202,7 +217,9 @@ func accountKey(account *string) string {
 func accountLookup(history []Binding) func(event *prepared) string {
 	bySession := map[string][]Binding{}
 	for _, row := range history {
-		bySession[row.SessionID] = append(bySession[row.SessionID], row)
+		if row.Agent == "" {
+			bySession[row.SessionID] = append(bySession[row.SessionID], row)
+		}
 	}
 	return func(event *prepared) string {
 		if event.AccountID != "" {

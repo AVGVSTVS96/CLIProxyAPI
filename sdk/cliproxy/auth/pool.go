@@ -125,7 +125,10 @@ type poolAccount struct {
 	fableShare float64
 }
 
+// poolSeat is the account one of a session's bindings runs on. The selector binds each of a
+// session's agents and models apart, so one session can run on several accounts at once.
 type poolSeat struct {
+	session    string
 	account    string
 	entrypoint string
 	seen       time.Time
@@ -305,8 +308,8 @@ type PoolRow struct {
 	SignInExpires string      `json:"signInExpires"`
 	ResetPlan     string      `json:"resetPlan,omitempty"`
 	// Credit is set on a Claude API key, which holds free credit rather than a plan's limits.
-	Credit bool `json:"credit,omitempty"`
-	ResetsSpent   []int64     `json:"resetsSpent,omitempty"`
+	Credit      bool    `json:"credit,omitempty"`
+	ResetsSpent []int64 `json:"resetsSpent,omitempty"`
 	// Fable's own weekly allowance, when it was read (unix ms), and its size as a fraction
 	// of the week. A Fable request needs room in both it and the week.
 	Fable      *PoolWindow `json:"fable"`
@@ -323,14 +326,17 @@ type PoolRow struct {
 // workingLocked counts the account's working sessions, and their five-hour load with
 // Agent SDK sessions weighted.
 func (p *claudePoolState) workingLocked(account string, now time.Time) (int, float64) {
-	n, load := 0, 0.0
+	working := map[string]float64{}
 	for _, seat := range p.sessions {
 		if seat.account == account && now.Sub(seat.seen) <= poolWorkingWindow {
-			n++
-			load += entrypoint.Weight(seat.entrypoint, p.cfg.AgentSDKFactor())
+			working[seat.session] = entrypoint.Weight(seat.entrypoint, p.cfg.AgentSDKFactor())
 		}
 	}
-	return n, load
+	load := 0.0
+	for _, weight := range working {
+		load += weight
+	}
+	return len(working), load
 }
 
 // sessionWeight is the five-hour weight of the session a request belongs to.
@@ -523,7 +529,8 @@ func poolAfterPick(opts cliproxyexecutor.Options, model string, auths []*Auth, a
 			}
 		}
 	}
-	claudePool.seat(opts.Headers, auth, cause)
+	binding, _ := opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
+	claudePool.seat(opts.Headers, binding, model, auth, cause)
 	return auth
 }
 
@@ -575,30 +582,39 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Heade
 	return rest, "early"
 }
 
-// seat records the account a Claude Code session runs on: "start" for its first binding,
-// "failure" when it changes, with why (limit, early, over), and the session's entrypoint.
-func (p *claudePoolState) seat(headers http.Header, auth *Auth, cause string) {
+// seat records the account each binding of a Claude Code session runs on, keyed as the
+// selector binds it (binding is its session identity, with the agent, and model): "start" when
+// it binds, "failure" when it changes, with why (limit, early, over), the session's
+// entrypoint, and the agent for a subagent's binding.
+func (p *claudePoolState) seat(headers http.Header, binding, model string, auth *Auth, cause string) {
 	sessionID := strings.ToLower(strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")))
 	if !sessionIDPattern.MatchString(sessionID) {
 		return
 	}
+	if binding == "" {
+		binding = sessionID
+	}
+	key := binding + "|" + canonicalModelKey(model)
 	account := poolAccountID(auth)
 	via := entrypoint.FromUserAgent(headers.Get("User-Agent"))
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	seat := p.sessions[sessionID]
+	seat := p.sessions[key]
 	if seat == nil || seat.account != account {
-		row := map[string]any{"at": now.UTC().Format(time.RFC3339Nano), "sessionId": sessionID, "accountId": account, "event": "start"}
+		row := map[string]any{"at": now.UTC().Format(time.RFC3339Nano), "sessionId": sessionID, "accountId": account, "event": "start", "model": canonicalModelKey(model)}
 		if via != "" {
 			row["entrypoint"] = via
+		}
+		if _, agent, ok := strings.Cut(binding, ":agent:"); ok {
+			row["agent"] = agent
 		}
 		if seat != nil {
 			row["event"], row["from"], row["cause"] = "failure", seat.account, cause
 		}
 		p.appendLocked("attribution.ndjson", row)
-		seat = &poolSeat{account: account, entrypoint: via}
-		p.sessions[sessionID] = seat
+		seat = &poolSeat{session: sessionID, account: account, entrypoint: via}
+		p.sessions[key] = seat
 	}
 	seat.seen = now
 	for id, s := range p.sessions {

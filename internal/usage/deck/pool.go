@@ -242,21 +242,29 @@ func parsePool(snap coreauth.PoolSnapshot, revision string, seats []seat) *poolS
 	return state
 }
 
-// seatsOf is each session's latest account, for sessions the proxy saw in the last day.
+// seatsOf is each session and the accounts its bindings were last on, for sessions the proxy
+// saw in the last day.
 func seatsOf(rows []Binding, now time.Time) []seat {
 	since := float64(now.UnixMilli() - dayMs)
-	var seats []seat
-	at := map[string]int{}
+	var order []string
+	latest := map[string]seat{}
 	for _, row := range rows {
 		if row.AccountID == nil || *row.AccountID == "" || row.millis < since {
 			continue
 		}
-		if i, ok := at[row.SessionID]; ok {
-			seats[i].account = *row.AccountID
-			continue
+		key := row.binding()
+		if _, ok := latest[key]; !ok {
+			order = append(order, key)
 		}
-		at[row.SessionID] = len(seats)
-		seats = append(seats, seat{session: row.SessionID, account: *row.AccountID})
+		latest[key] = seat{session: row.SessionID, account: *row.AccountID}
+	}
+	var seats []seat
+	seen := map[seat]bool{}
+	for _, key := range order {
+		if s := latest[key]; !seen[s] {
+			seen[s] = true
+			seats = append(seats, s)
+		}
 	}
 	return seats
 }
@@ -318,24 +326,25 @@ func historyOf(readings []LimitReading, now time.Time) []HistoryLine {
 	return lines
 }
 
-// movesOf lists starts and moves of the last day, newest first, from the pool's per-session account log.
+// movesOf lists starts and moves of the last day, newest first, from the pool's per-session
+// account log: a session's first binding starts it, and a binding that changed account moved it.
 func movesOf(rows []Binding, now time.Time) []Move {
 	since := float64(now.UnixMilli() - dayMs)
 	moves := []Move{}
-	last := map[string]string{}
+	started := map[string]bool{}
 	for _, row := range rows {
 		if row.AccountID == nil || *row.AccountID == "" {
 			continue
 		}
-		before, had := last[row.SessionID]
-		last[row.SessionID] = *row.AccountID
-		if (had && before == *row.AccountID) || row.millis < since {
+		first := !started[row.SessionID]
+		started[row.SessionID] = true
+		moved := row.Event == "failure" && row.From != nil && *row.From != *row.AccountID
+		if row.millis < since || !first && !moved {
 			continue
 		}
 		move := Move{At: row.millis, Session: row.SessionID, To: *row.AccountID, Cause: "start"}
-		if had {
-			move.From = ptr(before)
-			move.Cause = row.Cause
+		if moved {
+			move.From, move.Cause = row.From, row.Cause
 			if move.Cause == "" {
 				move.Cause = "limit"
 			}

@@ -211,3 +211,30 @@ func TestAgentSDKRequestsCarryTheFactorOnTheFiveHourLimitOnly(t *testing.T) {
 		t.Fatalf("week charges %v and %v, want 1 and 1", charges[0].points[1], charges[1].points[1])
 	}
 }
+
+// A session's agents and models bind apart, so one on two accounts at once never moved.
+func TestMovesAndSeatsReadEachBindingApart(t *testing.T) {
+	now := time.Now()
+	at := func(minutes int) string { return now.Add(time.Duration(minutes) * time.Minute).UTC().Format(time.RFC3339Nano) }
+	var rows []Binding
+	for _, line := range []string{
+		`{"at":"` + at(-30) + `","sessionId":"s","accountId":"a","event":"start","model":"claude-fable-5-2"}`,
+		`{"at":"` + at(-29) + `","sessionId":"s","accountId":"b","event":"start","agent":"x","model":"claude-opus-5-5"}`,
+		`{"at":"` + at(-28) + `","sessionId":"s","accountId":"b","event":"start","model":"claude-haiku-5-5"}`,
+		`{"at":"` + at(-20) + `","sessionId":"s","accountId":"c","event":"failure","from":"a","cause":"limit","model":"claude-fable-5-2"}`,
+	} {
+		row, ok := parseBinding([]byte(line))
+		if !ok {
+			t.Fatalf("parseBinding(%s) failed", line)
+		}
+		rows = append(rows, row)
+	}
+	moves := movesOf(rows, now)
+	if len(moves) != 2 || moves[0].Cause != "limit" || *moves[0].From != "a" || moves[0].To != "c" || moves[1].Cause != "start" || moves[1].To != "a" {
+		t.Fatalf("moves = %+v, want the start on a and the one move from a to c", moves)
+	}
+	seats := seatsOf(rows, now)
+	if len(seats) != 2 || seats[0].account != "c" || seats[1].account != "b" {
+		t.Fatalf("seats = %+v, want s seated on c and b", seats)
+	}
+}

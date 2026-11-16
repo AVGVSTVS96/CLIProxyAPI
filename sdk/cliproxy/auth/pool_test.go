@@ -101,10 +101,10 @@ func TestSeatRecordsEachSessionsAccountOncePerChange(t *testing.T) {
 	dir := resetPool(t)
 	headers := http.Header{"X-Claude-Code-Session-Id": []string{"51933568-42b8-4c8e-bc44-2bed00731a66"}}
 	a, b := poolAuth("a", 1, 1, time.Hour), poolAuth("b", 1, 1, time.Hour)
-	claudePool.seat(headers, a, "limit")
-	claudePool.seat(headers, a, "limit")
-	claudePool.seat(headers, b, "early")
-	claudePool.seat(http.Header{"X-Claude-Code-Session-Id": []string{"not-a-session"}}, a, "limit")
+	claudePool.seat(headers, "", "claude-opus-5-5", a, "limit")
+	claudePool.seat(headers, "", "claude-opus-5-5", a, "limit")
+	claudePool.seat(headers, "", "claude-opus-5-5", b, "early")
+	claudePool.seat(http.Header{"X-Claude-Code-Session-Id": []string{"not-a-session"}}, "", "claude-opus-5-5", a, "limit")
 	data, _ := os.ReadFile(filepath.Join(dir, "attribution.ndjson"))
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[0], `"accountId":"a"`) || !strings.Contains(lines[1], `"accountId":"b"`) || !strings.Contains(lines[1], `"event":"failure"`) || !strings.Contains(lines[1], `"cause":"early"`) {
@@ -142,8 +142,8 @@ func TestAgentSDKSessionsLoadTheFiveHourRoomByTheFactor(t *testing.T) {
 	resetPool(t)
 	x, y := poolAuth("x", 50, 30, 48*time.Hour), poolAuth("y", 50, 30, 48*time.Hour)
 	now := time.Now()
-	claudePool.sessions["s1"] = &poolSeat{account: "x", entrypoint: "sdk-cli", seen: now}
-	claudePool.sessions["s2"] = &poolSeat{account: "y", entrypoint: "cli", seen: now}
+	claudePool.sessions["s1"] = &poolSeat{session: "s1", account: "x", entrypoint: "sdk-cli", seen: now}
+	claudePool.sessions["s2"] = &poolSeat{session: "s2", account: "y", entrypoint: "cli", seen: now}
 	if got := pickQuota(t, x, y); got != "y" {
 		t.Fatalf("picked %s, want y, whose working session drains the five-hour limit slower", got)
 	}
@@ -164,7 +164,7 @@ func TestSeatRecordsTheEntrypoint(t *testing.T) {
 	dir := resetPool(t)
 	headers := sdkHeaders("sdk-ts")
 	headers.Set("X-Claude-Code-Session-Id", "51933568-42b8-4c8e-bc44-2bed00731a66")
-	claudePool.seat(headers, poolAuth("a", 1, 1, time.Hour), "limit")
+	claudePool.seat(headers, "", "claude-opus-5-5", poolAuth("a", 1, 1, time.Hour), "limit")
 	data, _ := os.ReadFile(filepath.Join(dir, "attribution.ndjson"))
 	if !strings.Contains(string(data), `"entrypoint":"sdk-ts"`) {
 		t.Fatalf("attribution = %s", data)
@@ -178,12 +178,35 @@ func TestAnAccountWithoutAFiveHourLimitCountsSessionsAlike(t *testing.T) {
 		delete(a.Quota.Signals, "Anthropic-Ratelimit-Unified-5h-Utilization")
 	}
 	now := time.Now()
-	claudePool.sessions["s1"] = &poolSeat{account: "x", entrypoint: "sdk-cli", seen: now}
-	claudePool.sessions["s2"] = &poolSeat{account: "y", entrypoint: "cli", seen: now}
+	claudePool.sessions["s1"] = &poolSeat{session: "s1", account: "x", entrypoint: "sdk-cli", seen: now}
+	claudePool.sessions["s2"] = &poolSeat{session: "s2", account: "y", entrypoint: "cli", seen: now}
 	claudePool.mu.Lock()
 	rows := claudePool.rankLocked([]*Auth{x, y}, now, 1.7, "")
 	claudePool.mu.Unlock()
 	if rows[0].Room != rows[1].Room {
 		t.Fatalf("rooms %v and %v, want equal with no five-hour limit", rows[0].Room, rows[1].Room)
+	}
+}
+
+// A session whose main conversation and agent run on two accounts never moved.
+func TestSeatKeepsEachBindingOfASessionApart(t *testing.T) {
+	dir := resetPool(t)
+	session := "427dd5d5-3b0d-49a1-b3eb-4eed5aebe8ac"
+	h := http.Header{"X-Claude-Code-Session-Id": []string{session}}
+	a, b := poolAuth("a", 0, 10, 60*time.Hour), poolAuth("b", 0, 10, 60*time.Hour)
+	for i := 0; i < 5; i++ {
+		claudePool.seat(h, "claude:"+session, "claude-fable-5-2", a, "limit")
+		claudePool.seat(h, "claude:"+session+":agent:a06b74126f7b5358a", "claude-opus-5-5", b, "limit")
+		claudePool.seat(h, "claude:"+session, "claude-haiku-5-5", b, "limit")
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "attribution.ndjson"))
+	if moves := strings.Count(string(data), `"event":"failure"`); moves > 0 || !strings.Contains(string(data), `"agent":"a06b74126f7b5358a"`) {
+		t.Fatalf("attribution = %s, want one start per binding and no moves", data)
+	}
+	claudePool.mu.Lock()
+	working, _ := claudePool.workingLocked("b", time.Now())
+	claudePool.mu.Unlock()
+	if working != 1 {
+		t.Fatalf("working on b = %d, want the one session counted once", working)
 	}
 }
