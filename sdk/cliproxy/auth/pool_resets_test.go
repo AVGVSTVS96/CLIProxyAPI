@@ -482,3 +482,17 @@ func TestFableResetSpendsThoughItsHolderAlsoHoldsAWeeklyOneExpiringFirst(t *test
 		t.Fatalf("plans = %+v, want one Fable reset spent: no account has Fable left", plans)
 	}
 }
+
+func TestResetInItsLastWeekSpendsOnceItsOwnAccountIsOut(t *testing.T) {
+	resetPool(t)
+	holdReset("holder", 6*24*time.Hour)
+	plan := planFor(poolAuth("holder", 0, 100, 60*time.Hour), poolAuth("b", 0, 40, 62*time.Hour))
+	if plan.why == "" || !strings.Contains(plan.why, "holder@example.com had used its week") {
+		t.Fatalf("plan = %+v, want it spent: it expires in 6 days and its own week is used", plan)
+	}
+	resetPool(t)
+	holdReset("holder", 6*24*time.Hour)
+	if plan := planFor(poolAuth("holder", 0, 70, 60*time.Hour), poolAuth("b", 0, 40, 62*time.Hour)); plan.why != "" {
+		t.Fatalf("plan = %+v, want it kept while its own week has room", plan)
+	}
+}
