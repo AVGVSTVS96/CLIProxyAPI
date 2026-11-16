@@ -301,6 +301,8 @@ type PoolRow struct {
 	Disabled      bool        `json:"disabled"`
 	SignInExpires string      `json:"signInExpires"`
 	ResetPlan     string      `json:"resetPlan,omitempty"`
+	// Credit is set on a Claude API key, which holds free credit rather than a plan's limits.
+	Credit bool `json:"credit,omitempty"`
 	ResetsSpent   []int64     `json:"resetsSpent,omitempty"`
 	// Fable's own weekly allowance, when it was read (unix ms), and its size as a fraction
 	// of the week. A Fable request needs room in both it and the week.
@@ -361,12 +363,16 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 			continue
 		}
 		id := poolAccountID(auth)
+		row := PoolRow{AuthID: auth.ID, Account: id, auth: auth, Credit: isAPIKeyAuth(auth), Disabled: auth.Disabled || auth.Status == StatusDisabled}
+		if row.Credit {
+			rows = append(rows, row)
+			continue
+		}
 		a := p.account(id)
 		r := p.readingLocked(auth, now)
 		incoming := weight
-		row := PoolRow{AuthID: auth.ID, Account: id, Email: metaString(auth, "email"), Reading: r, auth: auth,
-			Cloud: a.cloud, Resets: a.resets, AtLimit: a.atLimit, Plan: a.plan, NeedsReauth: a.needsReauth, Disabled: auth.Disabled,
-			SignInExpires: metaString(auth, "refresh_expired")}
+		row.Email, row.Reading, row.Cloud, row.Resets, row.AtLimit, row.Plan = metaString(auth, "email"), r, a.cloud, a.resets, a.atLimit, a.plan
+		row.NeedsReauth, row.SignInExpires = a.needsReauth || hasUnauthorizedAuthFailure(auth), metaString(auth, "refresh_expired")
 		var load float64
 		row.Working, load = p.workingLocked(id, now)
 		if r.FiveHour == nil && r.At > 0 {
@@ -401,7 +407,7 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 			weekRoom = min(weekRoom, cfg.WeeklyCutoff-row.fable)
 		}
 		row.weekRoom = weekRoom
-		row.Usable = fiveRoom > 0 && weekRoom > 0 && !a.needsReauth
+		row.Usable = fiveRoom > 0 && weekRoom > 0 && row.member()
 		row.Room = fiveRoom / (load + incoming)
 		var weekReset int64
 		if r.Week != nil {
@@ -413,7 +419,7 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 		row.WeekResetsAt = weekReset
 		row.Urgency = weekRoom / math.Max(1, float64(weekReset-now.UnixMilli())/3.6e6)
 		row.Comfortable = row.Room >= cfg.SessionCutoff/float64(cfg.AgentsPerAccount) && weekRoom >= 5
-		row.Open = row.five < 100 && row.week < 100 && !(fable && row.fable >= 100) && !a.needsReauth
+		row.Open = row.five < 100 && row.week < 100 && !(fable && row.fable >= 100) && row.member()
 		if fiveRoom <= 0 && r.FiveHour != nil {
 			row.FreeAt = nextReset(r.FiveHour.ResetsAt, now, 5*time.Hour)
 		}
@@ -425,6 +431,8 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		switch {
+		case a.Credit != b.Credit:
+			return b.Credit
 		case a.Usable != b.Usable:
 			return a.Usable
 		case !a.Usable && a.Open != b.Open:
@@ -448,6 +456,12 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 		}
 	})
 	return rows
+}
+
+// member reports whether the row is a plan account the pool can give work to: turned on,
+// signed in, and not an API key.
+func (r PoolRow) member() bool {
+	return !r.Credit && !r.Disabled && !r.NeedsReauth
 }
 
 // QuotaSelector picks the Claude account tokenhub's policy ranks first. It decides cold

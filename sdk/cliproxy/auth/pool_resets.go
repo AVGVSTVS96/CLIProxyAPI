@@ -154,7 +154,7 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 	var busy, fableBusy []string
 	for i := range rows {
 		r := &rows[i]
-		if r.Disabled || r.NeedsReauth || isAPIKeyAuth(r.auth) {
+		if !r.member() {
 			continue
 		}
 		weekLeft := !r.Known || r.week < r.weekCutoff || r.settling

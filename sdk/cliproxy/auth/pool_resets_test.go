@@ -496,3 +496,24 @@ func TestResetInItsLastWeekSpendsOnceItsOwnAccountIsOut(t *testing.T) {
 		t.Fatalf("plan = %+v, want it kept while its own week has room", plan)
 	}
 }
+
+func TestAPIKeysRankAfterEveryPlan(t *testing.T) {
+	resetPool(t)
+	key := &Auth{ID: "claude:apikey:abc", Provider: "claude", Attributes: map[string]string{"api_key": "sk-test"}}
+	claudePool.mu.Lock()
+	rows := claudePool.rankLocked([]*Auth{key, poolAuth("a", 0, 100, 60*time.Hour), poolAuth("b", 0, 100, 62*time.Hour)}, time.Now(), 1, "")
+	claudePool.mu.Unlock()
+	if last := rows[len(rows)-1]; last.Account != key.ID || last.Usable || last.Open || last.WeekResetsAt != 0 {
+		t.Fatalf("rows = %+v, want the key last, taking no plan work and with no week", rows)
+	}
+}
+
+func TestResetSpendsThoughASignedOutAccountHasWeekLeft(t *testing.T) {
+	resetPool(t)
+	holdReset("holder", 40*24*time.Hour)
+	out := poolAuth("out", 0, 30, 62*time.Hour)
+	out.Unavailable, out.Status, out.LastError = true, StatusError, &Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}
+	if plan := planFor(poolAuth("holder", 0, 100, 60*time.Hour), out); plan.why == "" {
+		t.Fatalf("plan = %+v, want it spent: the only account with week left can't take work", plan)
+	}
+}

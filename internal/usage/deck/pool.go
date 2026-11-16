@@ -134,6 +134,9 @@ func windowOf(w *coreauth.PoolWindow, sampledAt int64, length, cutoff float64) L
 }
 
 func reasonsOf(a coreauth.PoolRow, snap coreauth.PoolSnapshot) []string {
+	if a.Credit {
+		return []string{"Free credit, used only once every plan is maxed out."}
+	}
 	if a.NeedsReauth {
 		return []string{"Signed out: sign in again."}
 	}
@@ -170,6 +173,8 @@ func standingOf(a coreauth.PoolRow, rank int) string {
 	switch {
 	case a.NeedsReauth || a.Disabled:
 		return "signed-out"
+	case a.Credit:
+		return "open"
 	case rank == 0 && a.Usable:
 		return "next"
 	case a.Usable && a.Comfortable:
