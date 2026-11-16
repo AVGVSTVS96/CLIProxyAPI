@@ -99,15 +99,26 @@ func (r PoolReset) left(now time.Time) time.Duration {
 	return time.Duration(*r.ExpiresAt-now.UnixMilli()) * time.Millisecond
 }
 
-// nextReset is the account's live weekly reset that expires first.
-func (r PoolRow) nextReset(now time.Time) (PoolReset, bool) {
-	var next PoolReset
+// nextResets is the account's live weekly reset and its live Fable reset that expire first:
+// one kind can come due while the other can't.
+func (r PoolRow) nextResets(now time.Time) []PoolReset {
+	var weekly, fable PoolReset
 	for _, g := range r.Resets {
+		next := &weekly
+		if g.Fable {
+			next = &fable
+		}
 		if g.live(now) && (next.ID == "" || g.left(now) < next.left(now)) {
-			next = g
+			*next = g
 		}
 	}
-	return next, next.ID != ""
+	var out []PoolReset
+	for _, g := range []PoolReset{weekly, fable} {
+		if g.ID != "" {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 func (r PoolRow) label() string {
@@ -133,7 +144,7 @@ func (a *poolAccount) settled(r PoolReading, now time.Time) (PoolReading, bool) 
 	return r, false
 }
 
-// planResetsLocked decides from ranked rows, for every account holding a weekly reset,
+// planResetsLocked decides from ranked rows, for every held reset nextResets offers,
 // whether to spend it now.
 func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []poolSpend {
 	var holders []poolSpend
@@ -149,7 +160,7 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 		if !r.Known || r.week < r.weekCutoff && r.fable < p.cfg.WeeklyCutoff || r.settling {
 			fableBusy = append(fableBusy, r.label())
 		}
-		if g, ok := r.nextReset(now); ok {
+		for _, g := range r.nextResets(now) {
 			holders = append(holders, poolSpend{row: r, grant: g})
 		}
 	}
@@ -203,6 +214,8 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 		}
 		if h.grant.Fable {
 			h.plan = fmt.Sprintf("Fable reset, gives back ~%.0f weekly points (what Fable used this week). %s", h.grant.GivesBack(h.row.week), h.plan)
+		} else {
+			h.plan = "Weekly reset: " + h.plan
 		}
 	}
 	return holders
@@ -234,10 +247,10 @@ func (p *claudePoolState) spendReset(ctx context.Context, m *Manager, auths []*A
 	}
 }
 
-// replanLocked is the plan for one account's reset.
-func (p *claudePoolState) replanLocked(auths []*Auth, account string, now time.Time) poolSpend {
+// replanLocked is the plan for one held reset.
+func (p *claudePoolState) replanLocked(auths []*Auth, account, grant string, now time.Time) poolSpend {
 	for _, plan := range p.planResetsLocked(p.rankLocked(auths, now, 1, ""), now) {
-		if plan.row.Account == account {
+		if plan.row.Account == account && plan.grant.ID == grant {
 			return plan
 		}
 	}
@@ -264,7 +277,7 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 		p.readUsage(ctx, account, token, now)
 		p.mu.Lock()
 		read := now.UnixMilli()-a.resetsAt <= poolFreshResets.Milliseconds()
-		plan = p.replanLocked(auths, account, now)
+		plan = p.replanLocked(auths, account, plan.grant.ID, now)
 		p.mu.Unlock()
 		if !read || plan.why == "" {
 			return false

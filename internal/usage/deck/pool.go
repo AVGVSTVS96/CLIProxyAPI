@@ -53,7 +53,7 @@ type Account struct {
 	Working    int         `json:"working"`
 	Idle       int         `json:"idle"`
 	HeldResets []HeldReset `json:"heldResets"`
-	// When the pool spends this account's held reset, or why it keeps it.
+	// When the pool spends each of this account's held resets, or why it keeps it.
 	ResetPlan string `json:"resetPlan,omitempty"`
 	// When the pool spent this account's resets (unix ms), oldest first.
 	ResetsSpent []int64 `json:"resetsSpent"`

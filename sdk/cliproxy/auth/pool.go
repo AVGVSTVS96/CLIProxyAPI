@@ -969,7 +969,7 @@ func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 	now := time.Now()
 	rows := claudePool.rankLocked(enabled, now, 1, "")
 	for _, plan := range claudePool.planResetsLocked(rows, now) {
-		plan.row.ResetPlan = plan.plan
+		plan.row.ResetPlan = strings.TrimSpace(plan.row.ResetPlan + " " + plan.plan)
 	}
 	for _, a := range auths {
 		if a.Disabled && isClaudeAuth(a) {

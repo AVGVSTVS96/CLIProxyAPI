@@ -28,7 +28,9 @@ func plansFor(auths ...*Auth) map[string]poolSpend {
 	defer claudePool.mu.Unlock()
 	out := map[string]poolSpend{}
 	for _, plan := range claudePool.planResetsLocked(claudePool.rankLocked(auths, now, 1, ""), now) {
-		out[plan.row.Account] = plan
+		if out[plan.row.Account].why == "" {
+			out[plan.row.Account] = plan
+		}
 	}
 	return out
 }
@@ -452,5 +454,31 @@ func TestWeeklyResetSpendsOnceNoAccountHasFableLeft(t *testing.T) {
 	holder, b = fableAt(poolAuth("holder", 0, 100, 60*time.Hour), 70), fableAt(poolAuth("b", 0, 60, 62*time.Hour), 40)
 	if plan := planFor(holder, b); plan.why != "" {
 		t.Fatalf("plan = %+v, want it kept while b can still take Fable work", plan)
+	}
+}
+
+func TestFableResetSpendsThoughItsHolderAlsoHoldsAWeeklyOneExpiringFirst(t *testing.T) {
+	resetPool(t)
+	var auths []*Auth
+	for _, id := range []string{"a", "b"} {
+		weekly, fable := time.Now().Add(25*24*time.Hour).UnixMilli(), time.Now().Add(113*24*time.Hour).UnixMilli()
+		claudePool.account(id).resets = []PoolReset{
+			{ID: "weekly-" + id, Kind: "weekly", Left: 1, ExpiresAt: &weekly, Weekly: true, UsableNow: true},
+			{ID: "fable-" + id, Kind: "fable", Left: 1, ExpiresAt: &fable, Fable: true, FableUsed: 100, UsableNow: true},
+		}
+		auths = append(auths, fableAt(poolAuth(id, 0, 60, 100*time.Hour), 100))
+	}
+	plans := plansFor(auths...)
+	spent := 0
+	for _, plan := range plans {
+		if plan.why != "" {
+			spent++
+			if !plan.grant.Fable {
+				t.Fatalf("plan = %+v, want the Fable reset spent, not the weekly one: weeks have room", plan)
+			}
+		}
+	}
+	if spent != 1 {
+		t.Fatalf("plans = %+v, want one Fable reset spent: no account has Fable left", plans)
 	}
 }
