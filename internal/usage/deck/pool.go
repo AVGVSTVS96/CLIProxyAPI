@@ -230,12 +230,8 @@ func parsePool(snap coreauth.PoolSnapshot, revision string, seats []seat) *poolS
 			}
 		}
 		account.Idle = seated - a.Working
-		week := 0.0
-		if a.Reading.Week != nil {
-			week = a.Reading.Week.Used
-		}
 		for _, r := range a.Resets {
-			account.HeldResets = append(account.HeldResets, HeldReset{Kind: r.Kind, Left: r.Left, ExpiresAt: r.ExpiresAt, Weekly: r.Weekly, GivesBack: math.Round(r.GivesBack(week))})
+			account.HeldResets = append(account.HeldResets, HeldReset{Kind: r.Kind, Left: r.Left, ExpiresAt: r.ExpiresAt, Weekly: r.Weekly, GivesBack: math.Round(a.GivesBack(r))})
 		}
 		state.accounts = append(state.accounts, account)
 	}

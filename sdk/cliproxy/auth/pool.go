@@ -91,11 +91,8 @@ type PoolReset struct {
 	NeedsLimit bool `json:"needsLimit"`
 	Weekly     bool `json:"weekly"`
 	// Fable is set on a reset that zeroes Fable's own weekly allowance and gives back to
-	// the week only what Fable used in it; FableUsed is the percent of that allowance used.
-	Fable     bool    `json:"fable"`
-	FableUsed float64 `json:"fableUsed"`
-	// Share is Fable's allowance as a fraction of the week, as Anthropic reports it.
-	Share float64 `json:"share,omitempty"`
+	// the week only what Fable used in it.
+	Fable bool `json:"fable"`
 }
 
 // PoolPlan is the account's subscription, from its profile.
@@ -405,7 +402,7 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 		row.settling = a.spent != nil && a.spent.fable && now.UnixMilli() < a.spent.until && row.week >= a.spent.week
 		row.weekCutoff = cfg.WeeklyCutoff
 		for _, reset := range a.resets {
-			if reset.NeedsLimit && reset.live(now) {
+			if reset.NeedsLimit && row.offers(reset, now) {
 				row.weekCutoff = 100
 				row.HoldsReset = row.HoldsReset || reset.Weekly
 			}
@@ -827,11 +824,7 @@ func (p *claudePoolState) readUsage(ctx context.Context, account, token string, 
 			if body.Cedar != nil {
 				for _, g := range body.Cedar.Grants {
 					if left, _ := g["resets_left"].(float64); left > 0 {
-						r := grantReset(g, int(left))
-						if r.Fable {
-							r.Share = a.fableShare
-						}
-						a.resets = append(a.resets, r)
+						a.resets = append(a.resets, grantReset(g, int(left)))
 					}
 				}
 			}
@@ -861,10 +854,8 @@ func grantReset(g map[string]any, left int) PoolReset {
 		weekly = weekly || c == "seven_day"
 	}
 	fable, _ := g["gives_back_weekly"].(bool)
-	used, _ := g["percent_used"].(map[string]any)
-	fableUsed, _ := used["seven_day_overage_included"].(float64)
 	return PoolReset{ID: id, Kind: resetKind(g), Left: left, ExpiresAt: isoMillis(&ends), Paused: paused, UsableNow: usable,
-		NeedsLimit: needsLimit || !given, Weekly: weekly, Fable: fable && !weekly, FableUsed: fableUsed}
+		NeedsLimit: needsLimit || !given, Weekly: weekly, Fable: fable && !weekly}
 }
 
 type usageWindow struct {

@@ -80,19 +80,32 @@ type poolSpend struct {
 }
 
 func (r PoolReset) live(now time.Time) bool {
-	return r.Left > 0 && !r.Paused && (r.Weekly || r.Fable && r.FableUsed > 0) && (r.ExpiresAt == nil || *r.ExpiresAt > now.UnixMilli())
+	return r.Left > 0 && !r.Paused && (r.Weekly || r.Fable) && (r.ExpiresAt == nil || *r.ExpiresAt > now.UnixMilli())
 }
 
-// GivesBack is how many weekly points spending r now would give back to a week at week used.
-func (r PoolReset) GivesBack(week float64) float64 {
-	if r.Fable {
-		share := r.Share
-		if share <= 0 {
-			share = poolFableShare
-		}
-		return min(week, r.FableUsed*share)
+// offers is whether g is live and has something to give back: a Fable reset gives nothing
+// while Fable is unused.
+func (r PoolRow) offers(g PoolReset, now time.Time) bool {
+	return g.live(now) && (g.Weekly || r.fable > 0)
+}
+
+// GivesBack is how many weekly points spending g now would give back to r's week.
+func (r PoolRow) GivesBack(g PoolReset) float64 {
+	week := 0.0
+	if r.Reading.Week != nil {
+		week = r.Reading.Week.Used
 	}
-	return week
+	if !g.Fable {
+		return week
+	}
+	if r.Fable == nil {
+		return 0
+	}
+	share := r.FableShare
+	if share <= 0 {
+		share = poolFableShare
+	}
+	return min(week, r.Fable.Used*share)
 }
 
 func (r PoolReset) left(now time.Time) time.Duration {
@@ -111,7 +124,7 @@ func (r PoolRow) nextResets(now time.Time) []PoolReset {
 		if g.Fable {
 			next = &fable
 		}
-		if g.live(now) && (next.ID == "" || g.left(now) < next.left(now)) {
+		if r.offers(g, now) && (next.ID == "" || g.left(now) < next.left(now)) {
 			*next = g
 		}
 	}
@@ -171,7 +184,7 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 	}
 	sort.SliceStable(holders, func(i, j int) bool {
 		a, b := holders[i], holders[j]
-		if back, other := a.grant.GivesBack(a.row.week), b.grant.GivesBack(b.row.week); back != other {
+		if back, other := a.row.GivesBack(a.grant), b.row.GivesBack(b.grant); back != other {
 			return back > other
 		}
 		return a.row.WeekResetsAt > b.row.WeekResetsAt
@@ -222,7 +235,7 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 			h.plan = fmt.Sprintf("Every account has used its %s, but this one's week comes back %s, too soon to use what the reset gives.", used, when(h.row.WeekResetsAt))
 		}
 		if h.grant.Fable {
-			h.plan = fmt.Sprintf("Fable reset, gives back ~%.0f weekly points (what Fable used this week). %s", h.grant.GivesBack(h.row.week), h.plan)
+			h.plan = fmt.Sprintf("Fable reset, gives back ~%.0f weekly points (what Fable used this week). %s", h.row.GivesBack(h.grant), h.plan)
 		} else {
 			h.plan = "Weekly reset: " + h.plan
 		}
@@ -334,7 +347,7 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 	p.appendLocked(poolResetsFile, map[string]any{"at": now.UTC().Format(time.RFC3339Nano), "account": account, "email": plan.row.Email,
 		"grant": plan.grant.ID, "kind": plan.grant.Kind, "requestId": claim.RequestID, "status": status, "result": out.Result, "reason": out.Reason,
 		"spent": spent, "resetsLeft": out.ResetsLeft, "cleared": out.Cleared, "weeklyResetsAt": out.WeeklyResetsAt, "why": plan.why,
-		"week": plan.row.week, "fableUsed": plan.grant.FableUsed, "givesBack": plan.grant.GivesBack(plan.row.week)})
+		"week": plan.row.week, "fableUsed": plan.row.fable, "givesBack": plan.row.GivesBack(plan.grant)})
 	retry := now.Add(poolClaimBackoff)
 	if at := isoMillis(out.CooldownUntil); at != nil && *at > retry.UnixMilli() {
 		retry = time.UnixMilli(*at)
@@ -361,9 +374,6 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 					g.Left = *out.ResetsLeft
 				}
 			}
-			if fableCleared && g.Fable {
-				g.FableUsed = 0
-			}
 			if g.Left > 0 {
 				resets = append(resets, g)
 			}
@@ -382,7 +392,7 @@ func (p *claudePoolState) spendOne(ctx context.Context, auths []*Auth, plan pool
 	switch {
 	case spent:
 		if plan.grant.Fable {
-			tell(fmt.Sprintf("Spent %s's Fable reset: %s. It gives back what Fable used this week, ~%.0f of its %.0f%% week; its week still resets %s.", plan.row.label(), plan.why, plan.grant.GivesBack(plan.row.week), plan.row.week, when(weekEnds)))
+			tell(fmt.Sprintf("Spent %s's Fable reset: %s. It gives back what Fable used this week, ~%.0f of its %.0f%% week; its week still resets %s.", plan.row.label(), plan.why, plan.row.GivesBack(plan.grant), plan.row.week, when(weekEnds)))
 		} else {
 			tell(fmt.Sprintf("Spent %s's weekly reset: %s. Its week is back to 0%%; next weekly reset %s. %s", plan.row.label(), plan.why, when(weekEnds), held))
 		}

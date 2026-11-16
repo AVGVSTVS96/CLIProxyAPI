@@ -257,9 +257,12 @@ func TestNoUsageReadWhileBackingOff(t *testing.T) {
 	}
 }
 
+// holdFableReset gives the account a Fable reset and a reading of fableUsed percent of Fable.
 func holdFableReset(id string, fableUsed float64) {
 	expires := time.Now().Add(120 * 24 * time.Hour).UnixMilli()
-	claudePool.account(id).resets = []PoolReset{{ID: "launch-fable", Kind: "fable", Left: 1, ExpiresAt: &expires, Fable: true, FableUsed: fableUsed, UsableNow: true}}
+	a := claudePool.account(id)
+	a.resets = []PoolReset{{ID: "launch-fable", Kind: "fable", Left: 1, ExpiresAt: &expires, Fable: true, UsableNow: true}}
+	a.fable, a.fableAt = &PoolWindow{Used: fableUsed}, time.Now().UnixMilli()
 }
 
 func TestFableResetSpendsWhenThePoolRunsDryOnTheOneGivingBackMost(t *testing.T) {
@@ -305,8 +308,8 @@ func TestFableHolderIsNotPreferredForNewWork(t *testing.T) {
 func TestGrantReadsAFableReset(t *testing.T) {
 	g := grantReset(map[string]any{"id": "launch-2610-fable", "clears": []any{"five_hour", "seven_day_overage_included"}, "gives_back_weekly": true,
 		"use_requires_limit": false, "percent_used": map[string]any{"seven_day_overage_included": 44.0, "seven_day": 83.0}}, 1)
-	if !g.Fable || g.Weekly || g.FableUsed != 44 || g.GivesBack(83) != g.FableUsed*poolFableShare {
-		t.Fatalf("grant = %+v, want a Fable reset with 44%% Fable used", g)
+	if !g.Fable || g.Weekly {
+		t.Fatalf("grant = %+v, want a Fable reset", g)
 	}
 }
 
@@ -393,7 +396,7 @@ func TestUsageReadsFablesAllowanceAndItsShareOfTheWeek(t *testing.T) {
 	rows := claudePool.rankLocked([]*Auth{poolAuth("a", 0, 82, 48*time.Hour)}, time.Now(), 1, "claude-fable-5-2")
 	claudePool.mu.Unlock()
 	r := rows[0]
-	if r.Fable == nil || r.Fable.Used != 51 || r.FableShare != 0.5 || r.Resets[0].GivesBack(82) != 25.5 {
+	if r.Fable == nil || r.Fable.Used != 51 || r.FableShare != 0.5 || r.GivesBack(r.Resets[0]) != 25.5 {
 		t.Fatalf("row = %+v, want Fable at 51%%, half the week, giving back 25.5 points", r)
 	}
 }
@@ -422,7 +425,7 @@ func TestWeeklySpendClearsFableToo(t *testing.T) {
 	fableAt(auths[0], 100)
 	expires := time.Now().Add(120 * 24 * time.Hour).UnixMilli()
 	a := claudePool.account("holder")
-	a.resets = append(a.resets, PoolReset{ID: "launch-fable", Kind: "fable", Left: 1, ExpiresAt: &expires, Fable: true, FableUsed: 100, UsableNow: true})
+	a.resets = append(a.resets, PoolReset{ID: "launch-fable", Kind: "fable", Left: 1, ExpiresAt: &expires, Fable: true, UsableNow: true})
 	claudePool.spendReset(context.Background(), nil, auths, time.Now())
 	claudePool.mu.Lock()
 	rows := claudePool.rankLocked(auths, time.Now(), 1, "claude-fable-5-2")
@@ -435,7 +438,7 @@ func TestWeeklySpendClearsFableToo(t *testing.T) {
 			t.Fatalf("row = %+v, want Fable work back on holder once its weekly reset cleared Fable too", r)
 		}
 		for _, g := range r.Resets {
-			if g.Fable && g.FableUsed != 0 {
+			if g.Fable && r.GivesBack(g) != 0 {
 				t.Fatalf("resets = %+v, want the Fable reset giving back nothing until Fable is used again", r.Resets)
 			}
 		}
@@ -464,7 +467,7 @@ func TestFableResetSpendsThoughItsHolderAlsoHoldsAWeeklyOneExpiringFirst(t *test
 		weekly, fable := time.Now().Add(25*24*time.Hour).UnixMilli(), time.Now().Add(113*24*time.Hour).UnixMilli()
 		claudePool.account(id).resets = []PoolReset{
 			{ID: "weekly-" + id, Kind: "weekly", Left: 1, ExpiresAt: &weekly, Weekly: true, UsableNow: true},
-			{ID: "fable-" + id, Kind: "fable", Left: 1, ExpiresAt: &fable, Fable: true, FableUsed: 100, UsableNow: true},
+			{ID: "fable-" + id, Kind: "fable", Left: 1, ExpiresAt: &fable, Fable: true, UsableNow: true},
 		}
 		auths = append(auths, fableAt(poolAuth(id, 0, 60, 100*time.Hour), 100))
 	}
