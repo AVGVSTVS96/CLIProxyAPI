@@ -215,7 +215,9 @@ func TestAgentSDKRequestsCarryTheFactorOnTheFiveHourLimitOnly(t *testing.T) {
 // A session's agents and models bind apart, so one on two accounts at once never moved.
 func TestMovesAndSeatsReadEachBindingApart(t *testing.T) {
 	now := time.Now()
-	at := func(minutes int) string { return now.Add(time.Duration(minutes) * time.Minute).UTC().Format(time.RFC3339Nano) }
+	at := func(minutes int) string {
+		return now.Add(time.Duration(minutes) * time.Minute).UTC().Format(time.RFC3339Nano)
+	}
 	var rows []Binding
 	for _, line := range []string{
 		`{"at":"` + at(-30) + `","sessionId":"s","accountId":"a","event":"start","model":"claude-fable-5-2"}`,
