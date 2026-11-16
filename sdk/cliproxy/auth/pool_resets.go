@@ -253,7 +253,8 @@ func (p *claudePoolState) spendReset(ctx context.Context, m *Manager, auths []*A
 		}
 	}
 	p.mu.Lock()
-	if p.cfg.StateDir == "" && p.cfg.AccountsFile == "" {
+	if p.cfg.StateDir == "" {
+		// A claim's request ID has to outlive a restart, or a resent claim could spend twice.
 		p.mu.Unlock()
 		return
 	}
@@ -484,7 +485,7 @@ func (p *claudePoolState) claimReset(ctx context.Context, token, org, grant, req
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "claude-cli/2.1.317 (external, cli)")
+	p.setUserAgent(req)
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return resetAnswer{}, 0

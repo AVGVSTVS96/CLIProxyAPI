@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	agentusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
@@ -117,7 +118,11 @@ func (s *Service) Run(ctx context.Context) error {
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
-		coreauth.StartPoolSampler(ctx, s.coreManager)
+		coreauth.StartPoolSampler(ctx, s.coreManager, func() string {
+			s.cfgMu.RLock()
+			defer s.cfgMu.RUnlock()
+			return "claude-cli/" + helps.DefaultClaudeVersion(s.cfg) + " (external, cli)"
+		})
 	}
 	if cfg != nil {
 		agentusage.SetReceipts(cfg.Usage.Receipts)

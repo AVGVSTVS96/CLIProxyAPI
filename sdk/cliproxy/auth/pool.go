@@ -139,6 +139,8 @@ type claudePoolState struct {
 	listed     string
 	client     *http.Client
 	claimsRead bool
+	// userAgent is the Claude Code client the pool's own requests to Anthropic name.
+	userAgent func() string
 }
 
 var claudePool = &claudePoolState{
@@ -676,8 +678,11 @@ func (p *claudePoolState) logReadingLocked(account string, r PoolReading) {
 
 // StartPoolSampler reads each Claude account's limits, held resets and plan, every minute
 // from response headers and, when those are stale or a cloud credit's balance is five
-// minutes old, from Anthropic's usage endpoint.
-func StartPoolSampler(ctx context.Context, m *Manager) {
+// minutes old, from Anthropic's usage endpoint, naming itself as userAgent.
+func StartPoolSampler(ctx context.Context, m *Manager, userAgent func() string) {
+	claudePool.mu.Lock()
+	claudePool.userAgent = userAgent
+	claudePool.mu.Unlock()
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
@@ -700,8 +705,8 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 		usage, resets, plan bool
 	}
 	var jobs []job
+	pooling := m.pooling()
 	p.mu.Lock()
-	enabled := p.cfg.StateDir != "" || p.cfg.AccountsFile != ""
 	for _, auth := range auths {
 		if !isClaudeAuth(auth) || auth.Disabled {
 			continue
@@ -721,7 +726,7 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 				a.cloud != nil && now.UnixMilli()-a.cloud.SampledAt > poolCloudEvery.Milliseconds(),
 			resets: now.UnixMilli()-a.resetsAt > poolResetsEvery.Milliseconds(),
 			plan:   a.plan == nil || now.UnixMilli()-a.plan.At > poolPlanEvery.Milliseconds()}
-		if enabled && (j.usage || j.resets || j.plan) {
+		if pooling && (j.usage || j.resets || j.plan) {
 			jobs = append(jobs, j)
 		}
 	}
@@ -752,8 +757,31 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 			p.readUsage(ctx, j.account, token, now)
 		}
 	}
-	p.spendReset(ctx, m, auths, now)
+	if pooling {
+		p.spendReset(ctx, m, auths, now)
+	}
 	p.writeAccounts(auths)
+}
+
+// pooling is whether m routes by the "quota" strategy, the one the pool serves.
+func (m *Manager) pooling() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	selector := m.selector
+	m.mu.RUnlock()
+	if affinity, ok := selector.(*SessionAffinitySelector); ok {
+		selector = affinity.fallback
+	}
+	_, quota := selector.(*QuotaSelector)
+	return quota
+}
+
+func (p *claudePoolState) setUserAgent(req *http.Request) {
+	if p.userAgent != nil {
+		req.Header.Set("User-Agent", p.userAgent())
+	}
 }
 
 // readUsage reads an account's limits and held resets from Anthropic's usage endpoint.
@@ -919,7 +947,7 @@ func (p *claudePoolState) get(ctx context.Context, token, path string, out any) 
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	req.Header.Set("User-Agent", "claude-cli/2.1.316 (external, cli)")
+	p.setUserAgent(req)
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return 0, 0
