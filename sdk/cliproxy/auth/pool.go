@@ -345,9 +345,10 @@ func nextReset(at int64, now time.Time, period time.Duration) int64 {
 }
 
 // rankLocked orders Claude accounts the way tokenhub did: accounts under both cutoffs first;
-// among them one holding a reset, so its week runs out first and the reset clears a whole
-// one, then those with their share of five-hour room per working session, then sampled ones; then the account whose remaining week runs out soonest, then
-// the most five-hour room per working session. With nothing open, the most real room wins.
+// among them one holding a weekly reset Anthropic lets it use only at the weekly limit, so it
+// gets there before the reset expires, then those with their share of five-hour room per
+// working session, then sampled ones; then the account whose remaining week runs out soonest,
+// then the most five-hour room per working session. With nothing open, the most real room wins.
 // Room is shared by load, the weighted working sessions plus the incoming one's weight; an
 // account whose plan has no five-hour limit, like a verified Ultra one, counts sessions alike.
 // For a Fable model, the weekly room is the lesser of the week's and Fable's own allowance's,
@@ -386,16 +387,12 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 			}
 			row.fable = row.Fable.Used
 		}
-		for _, reset := range a.resets {
-			if reset.Weekly && reset.Left > 0 && !reset.Paused && (reset.ExpiresAt == nil || *reset.ExpiresAt > now.UnixMilli()) {
-				row.HoldsReset = true
-			}
-		}
 		row.settling = a.spent != nil && a.spent.fable && now.UnixMilli() < a.spent.until && row.week >= a.spent.week
 		row.weekCutoff = cfg.WeeklyCutoff
 		for _, reset := range a.resets {
 			if reset.NeedsLimit && reset.live(now) {
 				row.weekCutoff = 100
+				row.HoldsReset = row.HoldsReset || reset.Weekly
 			}
 		}
 		fiveRoom, weekRoom := cfg.SessionCutoff-row.five, row.weekCutoff-row.week

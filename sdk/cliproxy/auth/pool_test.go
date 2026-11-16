@@ -62,12 +62,23 @@ func TestQuotaSelectorSpendsTheWeekThatRunsOutSoonest(t *testing.T) {
 	}
 }
 
-func TestQuotaSelectorPrefersAnAccountHoldingAReset(t *testing.T) {
+func TestQuotaSelectorPrefersAnAccountHoldingAResetThatNeedsTheLimit(t *testing.T) {
 	resetPool(t)
 	expires := time.Now().Add(24 * time.Hour).UnixMilli()
-	claudePool.account("holder").resets = []PoolReset{{Kind: "weekly", Left: 1, ExpiresAt: &expires, Weekly: true}}
+	claudePool.account("holder").resets = []PoolReset{{ID: "g", Kind: "weekly", Left: 1, ExpiresAt: &expires, Weekly: true, NeedsLimit: true}}
 	if got := pickQuota(t, poolAuth("soon", 10, 40, 10*time.Hour), poolAuth("holder", 10, 40, 120*time.Hour)); got != "holder" {
-		t.Fatalf("picked %s, want holder", got)
+		t.Fatalf("picked %s, want holder, which has to reach its limit before the reset expires", got)
+	}
+}
+
+// A reset spends only once every account is out, when it clears a whole week wherever it is
+// held, so holding one is no reason to leave another account's week to run out unused.
+func TestQuotaSelectorSpendsTheWeekEndingSoonestOverAResetHolder(t *testing.T) {
+	resetPool(t)
+	holdReset("a201", 26*24*time.Hour)
+	holdReset("a517", 26*24*time.Hour)
+	if got := pickQuota(t, poolAuth("shahidy", 0, 92, 14*time.Hour), poolAuth("a201", 0, 77, 97*time.Hour), poolAuth("a517", 0, 73, 110*time.Hour)); got != "shahidy" {
+		t.Fatalf("picked %s, want shahidy, whose 8 points end in 14 hours", got)
 	}
 }
 

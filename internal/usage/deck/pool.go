@@ -155,7 +155,7 @@ func reasonsOf(a coreauth.PoolRow, snap coreauth.PoolSnapshot) []string {
 		reasons = append(reasons, "Fable allowance used up, so Fable work goes to other accounts until it resets.")
 	}
 	if a.HoldsReset {
-		reasons = append(reasons, "Holds a weekly reset, so its week gets used first and the reset clears a whole one.")
+		reasons = append(reasons, "Holds a weekly reset that only works at the weekly limit, so its week gets used first.")
 	}
 	if a.Comfortable {
 		return append(reasons, "Has room for another working session.")
