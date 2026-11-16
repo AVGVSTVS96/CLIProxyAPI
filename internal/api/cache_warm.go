@@ -20,6 +20,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -284,14 +285,7 @@ func (w *cacheWarmer) writeLocked() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err = os.MkdirAll(filepath.Dir(w.file), 0o700); err != nil {
-		return 0, err
-	}
-	tmp := w.file + ".tmp"
-	if err = os.WriteFile(tmp, data, 0o600); err != nil {
-		return 0, err
-	}
-	return len(w.entries), os.Rename(tmp, w.file)
+	return len(w.entries), util.ReplaceFile(w.file, data)
 }
 
 // restore loads what the last run saved. A cache past its hour is gone, and touching it

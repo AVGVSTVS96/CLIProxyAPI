@@ -557,6 +557,12 @@ func (s *Service) saveRunState() {
 // last half minute lands on a fresh account, and every other keeps its prompt cache.
 const runStateCheckpointEvery = 30 * time.Second
 
+// cacheWarmCheckpointEvery is slower: the sessions kept warm carry whole conversations,
+// megabytes in all, and a session needs warming only after most of an hour idle. One that
+// sent in a killed run's last minutes still has its cache, and its older checkpointed
+// request still keeps most of its conversation warm.
+const cacheWarmCheckpointEvery = 10 * time.Minute
+
 // checkpointRunState writes session bindings and the sessions kept warm while the run lasts,
 // since a run that is killed, crashes or loses its machine never reaches saveRunState.
 func (s *Service) checkpointRunState(ctx context.Context) func() {
@@ -564,18 +570,21 @@ func (s *Service) checkpointRunState(ctx context.Context) func() {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		tick := time.NewTicker(runStateCheckpointEvery)
-		defer tick.Stop()
+		bindings := time.NewTicker(runStateCheckpointEvery)
+		defer bindings.Stop()
+		warm := time.NewTicker(cacheWarmCheckpointEvery)
+		defer warm.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-tick.C:
+			case <-bindings.C:
 				if s.coreManager != nil {
 					if _, err := s.coreManager.SaveSessionBindings(); err != nil {
 						log.Warnf("session-affinity: could not checkpoint bindings: %v", err)
 					}
 				}
+			case <-warm.C:
 				if err := s.server.CheckpointCacheWarm(); err != nil {
 					log.Warnf("cache warm: could not checkpoint sessions: %v", err)
 				}

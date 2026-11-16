@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 // sessionBindingsFile holds the session-to-account bindings between two runs of the proxy,
@@ -46,15 +48,8 @@ func (m *Manager) SaveSessionBindings() (int, error) {
 	if errMarshal != nil {
 		return 0, errMarshal
 	}
-	if errMkdir := os.MkdirAll(filepath.Dir(path), 0o700); errMkdir != nil {
-		return 0, errMkdir
-	}
-	tmp := path + ".tmp"
-	if errWrite := os.WriteFile(tmp, data, 0o600); errWrite != nil {
+	if errWrite := util.ReplaceFile(path, data); errWrite != nil {
 		return 0, errWrite
-	}
-	if errRename := os.Rename(tmp, path); errRename != nil {
-		return 0, errRename
 	}
 	return len(saved), nil
 }
