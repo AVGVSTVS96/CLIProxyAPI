@@ -27,7 +27,7 @@ func plansFor(auths ...*Auth) map[string]poolSpend {
 	claudePool.mu.Lock()
 	defer claudePool.mu.Unlock()
 	out := map[string]poolSpend{}
-	for _, plan := range claudePool.planResetsLocked(claudePool.rankLocked(auths, now, 1, ""), now) {
+	for _, plan := range claudePool.planResetsLocked(claudePool.rankLocked(claudePool.cfg, auths, now, 1, ""), now) {
 		if out[plan.row.Account].why == "" {
 			out[plan.row.Account] = plan
 		}
@@ -124,7 +124,7 @@ func TestResetThatNeedsTheLimitRunsItsHolderToTheLimit(t *testing.T) {
 	claudePool.account("holder").resets[0].NeedsLimit = true
 	holder, b := poolAuth("holder", 0, 99, 60*time.Hour), poolAuth("b", 0, 10, 60*time.Hour)
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{holder, b}, time.Now(), 1, "")
+	rows := claudePool.rankLocked(claudePool.cfg, []*Auth{holder, b}, time.Now(), 1, "")
 	claudePool.mu.Unlock()
 	if rows[0].Account != "holder" || !rows[0].Usable {
 		t.Fatalf("rows = %+v, want the holder first and still taking work at 99%%", rows)
@@ -298,7 +298,7 @@ func TestFableHolderIsNotPreferredForNewWork(t *testing.T) {
 	resetPool(t)
 	holdFableReset("holder", 50)
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{poolAuth("holder", 0, 10, 60*time.Hour)}, time.Now(), 1, "")
+	rows := claudePool.rankLocked(claudePool.cfg, []*Auth{poolAuth("holder", 0, 10, 60*time.Hour)}, time.Now(), 1, "")
 	claudePool.mu.Unlock()
 	if rows[0].HoldsReset {
 		t.Fatal("a Fable reset doesn't clear a whole week, so its holder shouldn't go first")
@@ -393,7 +393,7 @@ func TestUsageReadsFablesAllowanceAndItsShareOfTheWeek(t *testing.T) {
 		`"usable_now":true,"use_requires_limit":false,"ends_at":"2030-02-01T00:00:00Z","percent_used":{"seven_day_overage_included":51,"seven_day":82}}]}}`}}
 	claudePool.readUsage(context.Background(), "a", "token", time.Now())
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{poolAuth("a", 0, 82, 48*time.Hour)}, time.Now(), 1, "claude-fable-5-2")
+	rows := claudePool.rankLocked(claudePool.cfg, []*Auth{poolAuth("a", 0, 82, 48*time.Hour)}, time.Now(), 1, "claude-fable-5-2")
 	claudePool.mu.Unlock()
 	r := rows[0]
 	if r.Fable == nil || r.Fable.Used != 51 || r.FableShare != 0.5 || r.GivesBack(r.Resets[0]) != 25.5 {
@@ -428,7 +428,7 @@ func TestWeeklySpendClearsFableToo(t *testing.T) {
 	a.resets = append(a.resets, PoolReset{ID: "launch-fable", Kind: "fable", Left: 1, ExpiresAt: &expires, Fable: true, UsableNow: true})
 	claudePool.spendReset(context.Background(), nil, auths, time.Now())
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked(auths, time.Now(), 1, "claude-fable-5-2")
+	rows := claudePool.rankLocked(claudePool.cfg, auths, time.Now(), 1, "claude-fable-5-2")
 	claudePool.mu.Unlock()
 	for _, r := range rows {
 		if r.Account != "holder" {
@@ -504,7 +504,7 @@ func TestFreeCreditRanksAfterPlansWithRoomAndBeforeMaxedOnes(t *testing.T) {
 	resetPool(t)
 	key := &Auth{ID: "claude:apikey:abc", Provider: "claude", Attributes: map[string]string{"api_key": "sk-test"}}
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{key, poolAuth("maxed", 0, 100, 60*time.Hour), poolAuth("room", 0, 99, 62*time.Hour)}, time.Now(), 1, "")
+	rows := claudePool.rankLocked(claudePool.cfg, []*Auth{key, poolAuth("maxed", 0, 100, 60*time.Hour), poolAuth("room", 0, 99, 62*time.Hour)}, time.Now(), 1, "")
 	claudePool.mu.Unlock()
 	if rows[0].Account != "room" || rows[1].Account != key.ID || rows[1].Usable || rows[1].Open || rows[1].WeekResetsAt != 0 {
 		t.Fatalf("rows = %+v, want the plan with room, then the key, then the maxed plan", rows)

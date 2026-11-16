@@ -171,7 +171,7 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 			continue
 		}
 		weekLeft := !r.Known || r.week < r.weekCutoff || r.settling
-		fableLeft := !r.Known || r.week < r.weekCutoff && r.fable < p.cfg.WeeklyCutoff || r.settling
+		fableLeft := !r.Known || r.week < r.weekCutoff && r.fable < r.fableCutoff || r.settling
 		if weekLeft {
 			busy = append(busy, r.label())
 		}
@@ -259,7 +259,7 @@ func (p *claudePoolState) spendReset(ctx context.Context, m *Manager, auths []*A
 		return
 	}
 	p.loadClaimsLocked()
-	plans := p.planResetsLocked(p.rankLocked(enabled, now, 1, ""), now)
+	plans := p.planResetsLocked(p.rankLocked(p.cfg, enabled, now, 1, ""), now)
 	p.mu.Unlock()
 	for _, plan := range plans {
 		if plan.why != "" && p.spendOne(ctx, enabled, plan, now) && m != nil {
@@ -272,7 +272,7 @@ func (p *claudePoolState) spendReset(ctx context.Context, m *Manager, auths []*A
 
 // replanLocked is the plan for one held reset.
 func (p *claudePoolState) replanLocked(auths []*Auth, account, grant string, now time.Time) poolSpend {
-	for _, plan := range p.planResetsLocked(p.rankLocked(auths, now, 1, ""), now) {
+	for _, plan := range p.planResetsLocked(p.rankLocked(p.cfg, auths, now, 1, ""), now) {
 		if plan.row.Account == account && plan.grant.ID == grant {
 			return plan
 		}

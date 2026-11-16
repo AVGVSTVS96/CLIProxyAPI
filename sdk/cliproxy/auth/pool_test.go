@@ -181,7 +181,7 @@ func TestAnAccountWithoutAFiveHourLimitCountsSessionsAlike(t *testing.T) {
 	claudePool.sessions["s1"] = &poolSeat{session: "s1", account: "x", entrypoint: "sdk-cli", seen: now}
 	claudePool.sessions["s2"] = &poolSeat{session: "s2", account: "y", entrypoint: "cli", seen: now}
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{x, y}, now, 1.7, "")
+	rows := claudePool.rankLocked(claudePool.cfg, []*Auth{x, y}, now, 1.7, "")
 	claudePool.mu.Unlock()
 	if rows[0].Room != rows[1].Room {
 		t.Fatalf("rooms %v and %v, want equal with no five-hour limit", rows[0].Room, rows[1].Room)

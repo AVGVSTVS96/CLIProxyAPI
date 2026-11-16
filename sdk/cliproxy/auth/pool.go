@@ -311,15 +311,16 @@ type PoolRow struct {
 	ResetsSpent []int64 `json:"resetsSpent,omitempty"`
 	// Fable's own weekly allowance, when it was read (unix ms), and its size as a fraction
 	// of the week. A Fable request needs room in both it and the week.
-	Fable      *PoolWindow `json:"fable"`
-	FableAt    int64       `json:"fableAt"`
-	FableShare float64     `json:"fableShare"`
-	auth       *Auth
-	five, week float64
-	fable      float64
-	weekCutoff float64
-	weekRoom   float64
-	settling   bool
+	Fable       *PoolWindow `json:"fable"`
+	FableAt     int64       `json:"fableAt"`
+	FableShare  float64     `json:"fableShare"`
+	auth        *Auth
+	five, week  float64
+	fable       float64
+	weekCutoff  float64
+	fableCutoff float64
+	weekRoom    float64
+	settling    bool
 }
 
 // workingLocked counts the account's working sessions, and their five-hour load with
@@ -363,8 +364,7 @@ func nextReset(at int64, now time.Time, period time.Duration) int64 {
 // account whose plan has no five-hour limit, like a verified Ultra one, counts sessions alike.
 // For a Fable model, the weekly room is the lesser of the week's and Fable's own allowance's,
 // so Fable work goes to accounts with Fable left before Anthropic refuses it.
-func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float64, model string) []PoolRow {
-	cfg := p.cfg
+func (p *claudePoolState) rankLocked(cfg config.PoolConfig, auths []*Auth, now time.Time, weight float64, model string) []PoolRow {
 	rows := make([]PoolRow, 0, len(auths))
 	for _, auth := range auths {
 		if !isClaudeAuth(auth) {
@@ -402,7 +402,7 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 			row.fable = row.Fable.Used
 		}
 		row.settling = a.spent != nil && a.spent.fable && now.UnixMilli() < a.spent.until && row.week >= a.spent.week
-		row.weekCutoff = cfg.WeeklyCutoff
+		row.weekCutoff, row.fableCutoff = cfg.WeeklyCutoff, cfg.WeeklyCutoff
 		for _, reset := range a.resets {
 			if reset.NeedsLimit && row.offers(reset, now) {
 				row.weekCutoff = 100
@@ -504,7 +504,7 @@ func (s *QuotaSelector) Pick(ctx context.Context, provider, model string, opts c
 		return nil, err
 	}
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked(available, time.Now(), claudePool.sessionWeight(opts.Headers), model)
+	rows := claudePool.rankLocked(claudePool.cfg, available, time.Now(), claudePool.sessionWeight(opts.Headers), model)
 	claudePool.mu.Unlock()
 	if len(rows) > 0 {
 		return rows[0].auth, nil
@@ -542,7 +542,7 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Heade
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cfg, now, weight := p.cfg, time.Now(), p.sessionWeight(headers)
-	rows := p.rankLocked(auths, now, weight, model)
+	rows := p.rankLocked(p.cfg, auths, now, weight, model)
 	calm := func(r PoolRow) bool {
 		return r.Usable && r.Comfortable && r.five < cfg.SessionCutoff-poolMargin && r.weekRoom >= 5
 	}
@@ -1023,14 +1023,11 @@ func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 	auths := m.List()
 	claudePool.mu.Lock()
 	defer claudePool.mu.Unlock()
-	if preview != nil {
-		saved := claudePool.cfg
-		next := saved
-		next.SessionCutoff, next.WeeklyCutoff, next.AgentsPerAccount = preview.SessionCutoff, preview.WeeklyCutoff, preview.AgentsPerAccount
-		claudePool.cfg = normalizePoolConfig(next)
-		defer func() { claudePool.cfg = saved }()
-	}
 	cfg := claudePool.cfg
+	if preview != nil {
+		cfg.SessionCutoff, cfg.WeeklyCutoff, cfg.AgentsPerAccount = preview.SessionCutoff, preview.WeeklyCutoff, preview.AgentsPerAccount
+		cfg = normalizePoolConfig(cfg)
+	}
 	enabled := make([]*Auth, 0, len(auths))
 	for _, a := range auths {
 		if !a.Disabled {
@@ -1038,13 +1035,13 @@ func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 		}
 	}
 	now := time.Now()
-	rows := claudePool.rankLocked(enabled, now, 1, "")
+	rows := claudePool.rankLocked(cfg, enabled, now, 1, "")
 	for _, plan := range claudePool.planResetsLocked(rows, now) {
 		plan.row.ResetPlan = strings.TrimSpace(plan.row.ResetPlan + " " + plan.plan)
 	}
 	for _, a := range auths {
 		if a.Disabled && isClaudeAuth(a) {
-			rows = append(rows, claudePool.rankLocked([]*Auth{a}, now, 1, "")...)
+			rows = append(rows, claudePool.rankLocked(cfg, []*Auth{a}, now, 1, "")...)
 		}
 	}
 	spent := claudePool.spentLocked()
