@@ -46,3 +46,19 @@ func TestCreditRemainingFollowsProxySpendAfterTheConsoleReading(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestCreditsWithoutAUsageStoreReadTheGrantAlone(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Now().Add(-2 * time.Hour)
+	grant := `[{"account":"a","organization":"o","credentialId":"key","remaining":150,"allowance":200,"monthlyCap":200,` +
+		`"startsAt":` + strconv.FormatInt(start.UnixMilli(), 10) + `,"observedAt":` + strconv.FormatInt(start.Add(time.Hour).UnixMilli(), 10) + `,"expiresAt":` + strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10) + `}]`
+	if err := os.WriteFile(filepath.Join(dir, "credits.json"), []byte(grant), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := &Deck{}
+	d.paths.stateDir = dir
+	view, err := d.Credits()
+	if err != nil || len(view.API) != 1 || view.API[0].Remaining != 150 {
+		t.Fatalf("got %+v, %v", view, err)
+	}
+}

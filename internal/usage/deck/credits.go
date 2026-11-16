@@ -7,6 +7,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // APICredit is a grant and its last balance read off Console, which no API key can query.
@@ -55,7 +57,10 @@ func (d *Deck) Credits() (CreditsView, error) {
 		return view, fmt.Errorf("Credit observations are invalid.")
 	}
 	now := time.Now().UnixMilli()
-	events := d.opts.Store.Events()
+	var events []usage.Event
+	if d.opts.Store != nil {
+		events = d.opts.Store.Events()
+	}
 	for _, g := range grants {
 		if g.Account == "" || g.Organization == "" || g.CredentialID == "" || g.StartsAt <= 0 || g.StartsAt > g.ObservedAt || g.ObservedAt <= 0 || g.ObservedAt > now || g.ExpiresAt <= g.ObservedAt || g.Remaining < 0 || g.Allowance <= 0 || g.Remaining > g.Allowance || g.MonthlyCap < 0 {
 			return view, fmt.Errorf("Credit observations are invalid.")
