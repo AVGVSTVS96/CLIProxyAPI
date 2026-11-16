@@ -497,6 +497,14 @@ type RoutingConfig struct {
 	Pool PoolConfig `yaml:"pool,omitempty" json:"pool,omitempty"`
 }
 
+// RunState is the folder RunStateDir names, else StateDir.
+func (c PoolConfig) RunState() string {
+	if c.RunStateDir != "" {
+		return c.RunStateDir
+	}
+	return c.StateDir
+}
+
 // PoolConfig tunes the "quota" strategy, which spends every Claude account's weekly
 // limit before it resets without letting any one hit its five-hour limit.
 type PoolConfig struct {
@@ -508,6 +516,11 @@ type PoolConfig struct {
 	AgentsPerAccount int `yaml:"agents-per-account,omitempty" json:"agents-per-account,omitempty"`
 	// StateDir receives usage-history.ndjson, attribution.ndjson, resets/ and plans/. Empty writes nothing.
 	StateDir string `yaml:"state-dir,omitempty" json:"state-dir,omitempty"`
+	// RunStateDir holds each session's account and the sessions kept warm, written every
+	// half minute and read on start, so a restart, crash or kill keeps every session on the
+	// account holding its prompt cache. A folder synced between machines carries them to the
+	// machine the proxy moves to. Empty uses StateDir.
+	RunStateDir string `yaml:"run-state-dir,omitempty" json:"run-state-dir,omitempty"`
 	// AccountsFile receives the account list as {"accounts":[{id,email,tier,needsReauth}]}. Empty writes nothing.
 	AccountsFile string `yaml:"accounts-file,omitempty" json:"accounts-file,omitempty"`
 	// AgentSDKFiveHourFactor is how many interactive tokens one Agent SDK or `claude -p` token

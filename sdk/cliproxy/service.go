@@ -79,6 +79,9 @@ type Service struct {
 	// handedOver is set once a reload has handed the socket and session bindings to a new process.
 	handedOver bool
 
+	// stopCheckpoints ends the half-minute writes of the run state and waits for one in progress.
+	stopCheckpoints func()
+
 	// watcher handles file system monitoring.
 	watcher *WatcherWrapper
 

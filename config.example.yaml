@@ -207,6 +207,7 @@ routing:
   #   weekly-cutoff: 98           # weekly percent past which an account takes no new work
   #   agents-per-account: 100     # working sessions a fresh account takes before it counts as crowded
   #   state-dir: ""               # writes usage-history.ndjson, attribution.ndjson, resets/, plans/
+  #   run-state-dir: ""           # each session's account and the sessions kept warm, saved every 30s; a synced folder carries them across machines; empty uses state-dir
   #   accounts-file: ""           # writes {"accounts":[{id,email,tier,needsReauth}]}
   # weighted-round-robin uses each credential's integer weight (default 1, maximum 1,000,000).
   # Non-positive weights exclude the credential while this strategy is active.

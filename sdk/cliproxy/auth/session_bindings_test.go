@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func TestSessionCacheRestoreKeepsLiveBindingsAndOrder(t *testing.T) {
@@ -63,7 +65,25 @@ func TestSessionBindingsSurviveRestart(t *testing.T) {
 	if got, _ := after.sessionCache().Get("claude::voice::sonnet"); got != "auth-a" {
 		t.Fatalf("binding after restart = %q, want auth-a", got)
 	}
-	if _, err := os.Stat(filepath.Join(dir, sessionBindingsFile)); !os.IsNotExist(err) {
-		t.Fatalf("bindings file still present after restore: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, sessionBindingsFile)); err != nil {
+		t.Fatalf("bindings file gone after restore, so a crash before the next save loses them: %v", err)
+	}
+}
+
+func TestSessionBindingsLiveInTheRunStateDir(t *testing.T) {
+	state := resetPool(t)
+	shared := t.TempDir()
+	ConfigurePool(config.PoolConfig{StateDir: state, RunStateDir: shared})
+
+	before := NewManager(nil, NewSessionAffinitySelector(&RoundRobinSelector{}), nil)
+	before.sessionCache().Set("claude::voice::sonnet", "auth-a")
+	if _, err := before.SaveSessionBindings(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(shared, sessionBindingsFile)); err != nil {
+		t.Fatalf("bindings not in the run state dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(state, sessionBindingsFile)); !os.IsNotExist(err) {
+		t.Fatalf("bindings also written to the state dir: %v", err)
 	}
 }

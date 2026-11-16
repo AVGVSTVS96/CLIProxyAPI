@@ -306,8 +306,8 @@ func TestCacheWarmSessionsSurviveARestart(t *testing.T) {
 	if restored, err := afterWarmer.restore(); err != nil || restored != 1 {
 		t.Fatalf("restore = %d, %v", restored, err)
 	}
-	if _, err := os.Stat(filepath.Join(state, cacheWarmFile)); !os.IsNotExist(err) {
-		t.Fatalf("restore should remove the saved file, got %v", err)
+	if _, err := os.Stat(filepath.Join(state, cacheWarmFile)); err != nil {
+		t.Fatalf("restore should keep the saved file for a crash before the next save, got %v", err)
 	}
 	time.Sleep(80 * time.Millisecond)
 
@@ -320,6 +320,31 @@ func TestCacheWarmSessionsSurviveARestart(t *testing.T) {
 	sendCacheWarmTest(before, "")
 	if n := len(beforeUpstream.seen()); n != 2 || len(beforeWarmer.entries) != 1 {
 		t.Fatalf("the old run should stop keeping sessions once it saved them")
+	}
+}
+
+func TestCacheWarmSessionsSurviveACrash(t *testing.T) {
+	_, _ = newCacheWarmTest(t, "busy")
+	state := t.TempDir()
+	before, beforeUpstream, beforeWarmer := newCacheWarmEngine(state)
+	beforeWarmer.after = 30 * time.Millisecond
+	sendCacheWarmTest(before, "")
+	if saved, err := beforeWarmer.checkpoint(); err != nil || saved != 1 {
+		t.Fatalf("checkpoint = %d, %v", saved, err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if n := len(beforeUpstream.seen()); n < 2 {
+		t.Fatalf("a checkpoint should not stop warming, got %d requests", n)
+	}
+
+	_, afterUpstream, afterWarmer := newCacheWarmEngine(state)
+	afterWarmer.after = 30 * time.Millisecond
+	if restored, err := afterWarmer.restore(); err != nil || restored != 1 {
+		t.Fatalf("restore after a crash = %d, %v", restored, err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if n := len(afterUpstream.seen()); n < 1 {
+		t.Fatalf("the run after a crash should touch the checkpointed session, got %d touches", n)
 	}
 }
 

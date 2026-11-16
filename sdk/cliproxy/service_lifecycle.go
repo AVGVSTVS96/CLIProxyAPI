@@ -286,6 +286,8 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Info("handoff: took over the listening socket from the old process")
 	}
 
+	s.stopCheckpoints = s.checkpointRunState(ctx)
+
 	reloads := handoff.Requests()
 	for {
 		select {
@@ -544,8 +546,46 @@ func (s *Service) restoreRunState() {
 
 // saveRunState hands session bindings and the sessions being kept warm to the next run.
 func (s *Service) saveRunState() {
+	if s.stopCheckpoints != nil {
+		s.stopCheckpoints()
+	}
 	s.saveSessionBindings()
 	s.server.SaveCacheWarm()
+}
+
+// runStateCheckpointEvery bounds what a killed or crashed run loses: a session bound in its
+// last half minute lands on a fresh account, and every other keeps its prompt cache.
+const runStateCheckpointEvery = 30 * time.Second
+
+// checkpointRunState writes session bindings and the sessions kept warm while the run lasts,
+// since a run that is killed, crashes or loses its machine never reaches saveRunState.
+func (s *Service) checkpointRunState(ctx context.Context) func() {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(runStateCheckpointEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if s.coreManager != nil {
+					if _, err := s.coreManager.SaveSessionBindings(); err != nil {
+						log.Warnf("session-affinity: could not checkpoint bindings: %v", err)
+					}
+				}
+				if err := s.server.CheckpointCacheWarm(); err != nil {
+					log.Warnf("cache warm: could not checkpoint sessions: %v", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func (s *Service) restoreSessionBindings() {

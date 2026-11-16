@@ -265,6 +265,21 @@ func (w *cacheWarmer) save() (int, error) {
 	for _, entry := range w.entries {
 		entry.timer.Stop()
 	}
+	return w.writeLocked()
+}
+
+// checkpoint writes the entries and keeps warming, so a run that is killed or crashes
+// still hands them on.
+func (w *cacheWarmer) checkpoint() (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == "" || w.saved {
+		return 0, nil
+	}
+	return w.writeLocked()
+}
+
+func (w *cacheWarmer) writeLocked() (int, error) {
 	data, err := json.Marshal(w.entries)
 	if err != nil {
 		return 0, err
@@ -279,9 +294,8 @@ func (w *cacheWarmer) save() (int, error) {
 	return len(w.entries), os.Rename(tmp, w.file)
 }
 
-// restore loads what the last run saved and removes the file, so a crash later never
-// brings back entries older than the ones this run makes. A cache past its hour is gone,
-// and touching it would save it again, so its entry stays behind.
+// restore loads what the last run saved. A cache past its hour is gone, and touching it
+// would save it again, so its entry stays behind.
 func (w *cacheWarmer) restore() (int, error) {
 	if w.file == "" {
 		return 0, nil
@@ -291,9 +305,6 @@ func (w *cacheWarmer) restore() (int, error) {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, err
-	}
-	if err = os.Remove(w.file); err != nil {
 		return 0, err
 	}
 	var saved map[string]*cacheWarmEntry
@@ -430,6 +441,15 @@ func (s *Server) SaveCacheWarm() {
 	} else if saved > 0 {
 		log.Infof("cache warm: saved %d sessions for the next run", saved)
 	}
+}
+
+// CheckpointCacheWarm writes the sessions being kept warm and goes on warming them.
+func (s *Server) CheckpointCacheWarm() error {
+	if s == nil || s.cacheWarmer == nil {
+		return nil
+	}
+	_, err := s.cacheWarmer.checkpoint()
+	return err
 }
 
 // RestoreCacheWarm picks up the sessions the last run was keeping warm.

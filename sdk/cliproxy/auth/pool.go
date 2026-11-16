@@ -161,6 +161,7 @@ func normalizePoolConfig(cfg config.PoolConfig) config.PoolConfig {
 		cfg.AgentsPerAccount = 100
 	}
 	cfg.StateDir = expandHome(cfg.StateDir)
+	cfg.RunStateDir = expandHome(cfg.RunStateDir)
 	cfg.AccountsFile = expandHome(cfg.AccountsFile)
 	return cfg
 }

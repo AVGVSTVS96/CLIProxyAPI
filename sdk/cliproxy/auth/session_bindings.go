@@ -28,10 +28,11 @@ func (m *Manager) sessionCache() *SessionCache {
 func sessionBindingsPath() string {
 	claudePool.mu.Lock()
 	defer claudePool.mu.Unlock()
-	if claudePool.cfg.StateDir == "" {
+	dir := claudePool.cfg.RunState()
+	if dir == "" {
 		return ""
 	}
-	return filepath.Join(claudePool.cfg.StateDir, sessionBindingsFile)
+	return filepath.Join(dir, sessionBindingsFile)
 }
 
 // SaveSessionBindings writes the live session bindings to the pool's state directory.
@@ -58,8 +59,7 @@ func (m *Manager) SaveSessionBindings() (int, error) {
 	return len(saved), nil
 }
 
-// RestoreSessionBindings loads what the last run saved and removes the file, so a crash
-// later never brings back bindings older than the ones this run makes.
+// RestoreSessionBindings loads what the last run saved.
 func (m *Manager) RestoreSessionBindings() (int, error) {
 	cache, path := m.sessionCache(), sessionBindingsPath()
 	if cache == nil || path == "" {
@@ -71,9 +71,6 @@ func (m *Manager) RestoreSessionBindings() (int, error) {
 	}
 	if errRead != nil {
 		return 0, errRead
-	}
-	if errRemove := os.Remove(path); errRemove != nil {
-		return 0, errRemove
 	}
 	var saved []SavedSessionBinding
 	if errUnmarshal := json.Unmarshal(data, &saved); errUnmarshal != nil {
