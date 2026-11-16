@@ -31,12 +31,15 @@ import (
 // ones, so they weigh routing.pool.agent-sdk-five-hour-factor sessions each there.
 //
 // Spend order, cheapest first: plans, then free credit, then paid extra usage.
-//   - Plans: the OAuth accounts above, for any bare model.
-//   - Free credit: Claude API keys under the "included" prefix, holding credit that costs
-//     nothing, like the monthly API credit Max and Ultra include, in an organization with no
-//     card. Anthropic counts it for the API, the Agent SDK and `claude -p`, not interactive
-//     Claude Code, so only a caller asking for "included/<model>" reaches it; a bare model never
-//     does. It needs no extra-usage switch.
+//   - Plans: the OAuth accounts above.
+//   - Free credit: Claude API keys holding credit that costs nothing, like the monthly API
+//     credit Max and Ultra include, in an organization with no card. It is the fallback for
+//     when every plan account is maxed out: an API key ranks after every plan with room left
+//     and before every maxed-out one, and a session on one goes back to a plan once one has
+//     room. Anthropic counts it for the API, the Agent SDK and `claude -p`, not interactive
+//     Claude Code, so a Claude Code session that doesn't say it is one of those never gets an
+//     API key (creditAllowed). It needs no extra-usage switch. API keys share the plans'
+//     priority, so the pool, not a priority tier, decides when they take work.
 //   - Paid extra usage: Anthropic bills it on a plan account past its limits, and only where
 //     the account owner turned extra usage on. Nothing here turns it on.
 
@@ -431,12 +434,12 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		switch {
-		case a.Credit != b.Credit:
-			return b.Credit
 		case a.Usable != b.Usable:
 			return a.Usable
 		case !a.Usable && a.Open != b.Open:
 			return a.Open
+		case a.Credit != b.Credit:
+			return a.Credit
 		case !a.Usable && a.Open:
 			return a.five < b.five
 		case !a.Usable:
@@ -456,6 +459,27 @@ func (p *claudePoolState) rankLocked(auths []*Auth, now time.Time, weight float6
 		}
 	})
 	return rows
+}
+
+// creditAllowed reports whether a request may run on free credit: a caller that isn't
+// Claude Code, or a Claude Code session that says it is the Agent SDK or `claude -p`.
+func creditAllowed(headers http.Header) bool {
+	via := entrypoint.FromUserAgent(headers.Get("User-Agent"))
+	return entrypoint.AgentSDK(via) || via == "" && headers.Get("X-Claude-Code-Session-Id") == ""
+}
+
+// tier is the row's class for new work: room under the cutoffs, then room under the limits,
+// then free credit, then nothing.
+func (r PoolRow) tier() int {
+	switch {
+	case r.Usable:
+		return 3
+	case r.Open:
+		return 2
+	case r.Credit:
+		return 1
+	}
+	return 0
 }
 
 // member reports whether the row is a plan account the pool can give work to: turned on,
@@ -504,7 +528,8 @@ func poolAfterPick(opts cliproxyexecutor.Options, model string, auths []*Auth, a
 }
 
 // moveAway returns the other accounts and "over" (past a cutoff) or "early" (nearing one)
-// when the session should leave auth for a clearer account. An Agent SDK session nears the
+// when the session should leave auth for a clearer account, or for a better tier: a maxed-out
+// plan for free credit, free credit for a plan with room. An Agent SDK session nears the
 // five-hour cutoff faster, so its margin before the cutoff is wider by the same factor. A
 // Fable session leaves an account whose Fable allowance runs out the same way.
 func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Header, model string) ([]*Auth, string) {
@@ -531,7 +556,7 @@ func (p *claudePoolState) moveAway(auth *Auth, auths []*Auth, headers http.Heade
 	}
 	better := false
 	for _, r := range rows {
-		if r.AuthID != auth.ID && (calm(r) || (urgent && r.Usable)) {
+		if r.AuthID != auth.ID && (calm(r) || urgent && r.tier() > mine.tier()) {
 			better = true
 		}
 	}
@@ -992,10 +1017,14 @@ func (m *Manager) PoolSnapshot(preview *config.PoolConfig) PoolSnapshot {
 		rows[i].ResetsSpent = spent[rows[i].Account]
 	}
 	decision := "No Claude account can take a new session."
-	if len(rows) > 0 && rows[0].Usable {
+	switch {
+	case len(rows) == 0:
+	case rows[0].Usable:
 		decision = fmt.Sprintf("New sessions go to %s.", rows[0].Email)
-	} else if len(rows) > 0 && rows[0].Open {
+	case rows[0].Open:
 		decision = fmt.Sprintf("Every account is past a cutoff; new sessions go to %s, which has the most room left.", rows[0].Email)
+	case rows[0].Credit:
+		decision = "Every plan is maxed out, so Agent SDK and claude -p work goes to free credit; interactive sessions stay on the plans."
 	}
 	return PoolSnapshot{SessionCutoff: cfg.SessionCutoff, WeeklyCutoff: cfg.WeeklyCutoff, AgentsPerAccount: cfg.AgentsPerAccount, Accounts: rows, Decision: decision}
 }

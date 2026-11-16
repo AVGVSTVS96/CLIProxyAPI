@@ -497,14 +497,14 @@ func TestResetInItsLastWeekSpendsOnceItsOwnAccountIsOut(t *testing.T) {
 	}
 }
 
-func TestAPIKeysRankAfterEveryPlan(t *testing.T) {
+func TestFreeCreditRanksAfterPlansWithRoomAndBeforeMaxedOnes(t *testing.T) {
 	resetPool(t)
 	key := &Auth{ID: "claude:apikey:abc", Provider: "claude", Attributes: map[string]string{"api_key": "sk-test"}}
 	claudePool.mu.Lock()
-	rows := claudePool.rankLocked([]*Auth{key, poolAuth("a", 0, 100, 60*time.Hour), poolAuth("b", 0, 100, 62*time.Hour)}, time.Now(), 1, "")
+	rows := claudePool.rankLocked([]*Auth{key, poolAuth("maxed", 0, 100, 60*time.Hour), poolAuth("room", 0, 99, 62*time.Hour)}, time.Now(), 1, "")
 	claudePool.mu.Unlock()
-	if last := rows[len(rows)-1]; last.Account != key.ID || last.Usable || last.Open || last.WeekResetsAt != 0 {
-		t.Fatalf("rows = %+v, want the key last, taking no plan work and with no week", rows)
+	if rows[0].Account != "room" || rows[1].Account != key.ID || rows[1].Usable || rows[1].Open || rows[1].WeekResetsAt != 0 {
+		t.Fatalf("rows = %+v, want the plan with room, then the key, then the maxed plan", rows)
 	}
 }
 
