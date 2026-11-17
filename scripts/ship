@@ -1,60 +1,17 @@
 #!/usr/bin/env bash
-# usage: scripts/ship <host> <url>
-# Ships this commit to the pool on <host>: builds it, puts the binary and deploy/ in place there, reloads the pool and
-# Caddy, and checks a real reply through Caddy on <host> (scripts/check). If the check fails, what was there goes back.
+# usage: scripts/ship <url>
+# Ships this commit to the pool on Fly (fly.toml) and keeps it only if a real Claude reply comes back whole through
+# <url> (scripts/check); otherwise the image that ran before goes back.
 set -euo pipefail
-host=${1:?usage: scripts/ship <host> <url>}
-url=${2:?usage: scripts/ship <host> <url>}
+url=${1:?usage: scripts/ship <url>}
 cd "$(dirname "$0")/.."
-ip=$(tailscale ip -4 "$host")
-out=$(mktemp -d)
-trap 'rm -rf "$out"' EXIT
-go build -o "$out/cliproxyapi" ./cmd/server
-cp deploy/* "$out/"
-ssh "$host" 'rm -rf ~/.cache/ship/next && mkdir -p ~/.cache/ship/next'
-scp -q "$out"/* "$host:.cache/ship/next/"
-
-# put <from> [<keep>]: moves <from>'s files into place, keeping the ones they replace in <keep>, then reloads the pool
-# and Caddy and waits until the pool runs the binary on disk.
-put() {
-  ssh "$host" bash -s -- "$@" <<'EOF'
-set -euo pipefail
-export XDG_RUNTIME_DIR=/run/user/$(id -u)
-from=$1 keep=${2:-}
-units=~/.config/systemd/user
-declare -A to=([cliproxyapi]=~/.local/bin [Caddyfile]=~/.config/caddy [cliproxyapi.socket]=$units [cliproxyapi.service]=$units [caddy.service]=$units)
-[ -z "$keep" ] || { rm -rf "$keep"; mkdir -p "$keep"; }
-for f in "${!to[@]}"; do
-  [ -e "$from/$f" ] || continue
-  mkdir -p "${to[$f]}"
-  [ -z "$keep" ] || [ ! -e "${to[$f]}/$f" ] || cp -p "${to[$f]}/$f" "$keep/"
-  cp "$from/$f" "${to[$f]}/$f.new" && mv "${to[$f]}/$f.new" "${to[$f]}/$f"
-done
-[ -e ~/.local/bin/cliproxyapi ] || { systemctl --user stop cliproxyapi.service cliproxyapi.socket; exit 0; }
-systemctl --user daemon-reload
-systemctl --user enable -q cliproxyapi.socket cliproxyapi.service caddy.service
-if systemctl --user is-active -q cliproxyapi.service; then
-  systemctl --user reload cliproxyapi.service
-else
-  systemctl --user start cliproxyapi.socket cliproxyapi.service
-fi
-systemctl --user reload-or-restart caddy.service
-want=$(sha256sum <~/.local/bin/cliproxyapi)
-for _ in $(seq 60); do
-  pid=$(systemctl --user show -p MainPID --value cliproxyapi.service)
-  [ "$pid" != 0 ] && [ "$(sha256sum </proc/"$pid"/exe)" = "$want" ] && exit 0
-  sleep 1
-done
-echo "ship: the pool on $(hostname) isn't running the new binary" >&2
-exit 1
-EOF
-}
-
-if put .cache/ship/next .cache/ship/prev && scripts/check "$url" "$ip"; then
-  echo "ship: $(git log -1 --format='%h %s') is live on $host"
+app=$(sed -n 's/^app = "\(.*\)"/\1/p' fly.toml)
+before=$(fly image show --app "$app" --json | jq -r '.[0] | "\(.Registry)/\(.Repository)@\(.Digest)"')
+fly deploy --remote-only --wait-timeout 5m
+if scripts/check "$url"; then
+  echo "ship: $(git log -1 --format='%h %s') is live on $app"
   exit 0
 fi
-echo "ship: undoing $(git log -1 --format=%h) on $host" >&2
-ssh "$host" '[ -e ~/.cache/ship/prev/cliproxyapi ] || rm -f ~/.local/bin/cliproxyapi'
-put .cache/ship/prev
+echo "ship: undoing $(git log -1 --format=%h) on $app" >&2
+fly deploy --image "$before" --wait-timeout 5m
 exit 1

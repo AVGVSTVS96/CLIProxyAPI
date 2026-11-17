@@ -1,9 +1,0 @@
-[Unit]
-Description=cliproxyapi's port, held across restarts so connections queue instead of failing
-
-[Socket]
-ListenStream=127.0.0.1:8317
-Backlog=1024
-
-[Install]
-WantedBy=sockets.target
