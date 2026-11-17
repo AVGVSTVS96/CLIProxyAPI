@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# usage: scripts/check <url> [ip]
+# Passes when a real Claude reply comes back whole through the pool at <url>, both streamed and not, sent with Claude
+# Code's own key. With [ip], it reaches <url>'s host there instead of through DNS.
+set -euo pipefail
+url=${1:?usage: scripts/check <url> [ip]}
+settings=~/.claude/settings.json
+token=${ANTHROPIC_AUTH_TOKEN:-$(jq -r '.env.ANTHROPIC_AUTH_TOKEN // empty' "$settings")}
+headers=${ANTHROPIC_CUSTOM_HEADERS:-$(jq -r '.env.ANTHROPIC_CUSTOM_HEADERS // empty' "$settings")}
+args=(-sS --max-time 60 -H "Authorization: Bearer $token" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json')
+[ -n "$headers" ] && args+=(-H "$headers")
+[ -n "${2:-}" ] && args+=(--resolve "${url#https://}:443:$2")
+ask() { printf '{"model":"claude-haiku-5-5","max_tokens":16,"stream":%s,"messages":[{"role":"user","content":"Reply with the word ok."}]}' "$1"; }
+
+whole=$(curl "${args[@]}" "$url/v1/messages" -d "$(ask false)")
+jq -e '.type == "message" and (.content[0].text | length > 0)' <<<"$whole" >/dev/null ||
+  { echo "check: $url gave no whole reply: ${whole:0:300}" >&2; exit 1; }
+
+streamed=$(curl "${args[@]}" -N "$url/v1/messages" -d "$(ask true)")
+if ! { grep -q '^event: content_block_delta' <<<"$streamed" && grep -q '^event: message_stop' <<<"$streamed"; }; then
+  echo "check: $url gave no whole stream: ${streamed:0:300}" >&2
+  exit 1
+fi
+
+echo "check: $url answers, streamed and not"

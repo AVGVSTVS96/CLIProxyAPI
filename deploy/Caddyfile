@@ -1,0 +1,12 @@
+# The pool's name on the tailnet. ~/.config/caddy/env sets POOL_DOMAIN, POOL_HOME (where the name's front page sends
+# people) and VERCEL_API_TOKEN for the certificate; the name's DNS record points at this machine's tailnet address.
+{
+	auto_https disable_redirects
+	acme_dns vercel {env.VERCEL_API_TOKEN}
+}
+
+{$POOL_DOMAIN} {
+	@page path / /management.html
+	redir @page {$POOL_HOME} 302
+	reverse_proxy 127.0.0.1:8317
+}
