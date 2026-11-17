@@ -55,8 +55,24 @@ type paths struct {
 	hex, claude  string
 	stateDir     string
 	accountsFile string
+	receipts     string
 	plans        []config.UsagePlan
 	sdkFactor    float64
+}
+
+// files are the pool's state files a reader elsewhere follows, by name: the append-only
+// logs it reads on from where it stopped, and the credit grants.
+func (p paths) files() map[string]string {
+	files := map[string]string{}
+	if p.receipts != "" {
+		files["receipts.ndjson"] = p.receipts
+	}
+	if p.stateDir != "" {
+		for _, name := range []string{"attribution.ndjson", "usage-history.ndjson", "credits.json"} {
+			files[name] = filepath.Join(p.stateDir, name)
+		}
+	}
+	return files
 }
 
 func pathsOf(cfg config.Config) paths {
@@ -66,6 +82,7 @@ func pathsOf(cfg config.Config) paths {
 		claude:       expand(cfg.Usage.Claude, "~/.claude"),
 		stateDir:     expand(cfg.Routing.Pool.StateDir, ""),
 		accountsFile: expand(cfg.Routing.Pool.AccountsFile, ""),
+		receipts:     expand(cfg.Usage.Receipts, ""),
 		plans:        cfg.Usage.Plans,
 		sdkFactor:    cfg.Routing.Pool.AgentSDKFactor(),
 	}
@@ -214,6 +231,10 @@ func New(opts Options) *Deck {
 			}
 			return strings.HasPrefix(rel, "resets/") || strings.HasPrefix(rel, "plans/")
 		}})
+	}
+	for name, path := range d.paths.files() {
+		grew := burst(ctx, time.Second, func() { d.stream.stale(name) })
+		go d.watch(grew, watchSpec{dir: filepath.Dir(path), match: func(rel string) bool { return rel == filepath.Base(path) }})
 	}
 	go d.every(time.Minute, d.poolChanged)
 	go d.every(heartbeat, d.stream.heartbeat)
@@ -725,8 +746,9 @@ func (d *Deck) SetPolicy(proposed Policy, revision string, save bool, authorizat
 	return PolicyResult{}, fmt.Errorf("The account pool refused the policy (%d).", response.Code)
 }
 
-// Register serves the views under group: accounts, accounts/policy and events, and with
-// a store usage, sessions and credits.
+// Register serves the views under group: accounts, accounts/policy, events and the pool's
+// files (whole or from a byte offset with Range, a missing one empty), and with a store
+// usage, sessions and credits.
 func (d *Deck) Register(group *gin.RouterGroup) {
 	reply := func(c *gin.Context, value any, err error) {
 		c.Header("Cache-Control", "no-store")
@@ -749,6 +771,24 @@ func (d *Deck) Register(group *gin.RouterGroup) {
 			reply(c, view, err)
 		})
 	}
+	group.GET("/files/:name", func(c *gin.Context) {
+		path, ok := d.paths.files()[c.Param("name")]
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "The pool keeps no file by that name."})
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		file, err := os.Open(path)
+		switch {
+		case err == nil:
+			defer file.Close()
+			http.ServeContent(c.Writer, c.Request, "", time.Time{}, file)
+		case os.IsNotExist(err):
+			http.ServeContent(c.Writer, c.Request, "", time.Time{}, strings.NewReader(""))
+		default:
+			reply(c, nil, err)
+		}
+	})
 	group.GET("/accounts", func(c *gin.Context) {
 		view, err := d.Accounts()
 		reply(c, view, err)
