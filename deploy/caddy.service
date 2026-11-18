@@ -1,0 +1,13 @@
+[Unit]
+Description=caddy: TLS in front of the account pool
+After=network-online.target tailscaled.service
+
+[Service]
+EnvironmentFile=%h/.config/caddy/env
+ExecStart=%h/.local/bin/caddy run --config %h/.config/caddy/Caddyfile --adapter caddyfile
+ExecReload=%h/.local/bin/caddy reload --config %h/.config/caddy/Caddyfile --adapter caddyfile
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

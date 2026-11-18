@@ -1,0 +1,19 @@
+[Unit]
+Description=cliproxyapi: the account pool, behind Caddy
+After=network-online.target
+Requires=cliproxyapi.socket
+
+[Service]
+# About twice the live heap, so garbage collection isn't running nonstop, with room left for Caddy and Syncthing.
+Environment=GOMEMLIMIT=2GiB
+ExecStart=%h/.local/bin/cliproxyapi -config %h/.config/cliproxyapi/config.yaml
+# reload starts the binary on disk, which takes the socket and becomes the main process
+# while the old one finishes its in-flight requests.
+ExecReload=/bin/kill -HUP $MAINPID
+NotifyAccess=all
+Restart=always
+RestartSec=2
+TimeoutStopSec=200
+
+[Install]
+WantedBy=default.target
