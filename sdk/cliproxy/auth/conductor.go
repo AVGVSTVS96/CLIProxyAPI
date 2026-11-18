@@ -172,6 +172,10 @@ type resultPolicyHolder struct {
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
+	// standby is set while another process owns the credentials, around a handoff: m then
+	// neither refreshes nor saves them, since two processes refreshing one login make
+	// Anthropic revoke it.
+	standby                   atomic.Bool
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore

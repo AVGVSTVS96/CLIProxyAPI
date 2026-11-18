@@ -23,13 +23,14 @@ import (
 // Fable's own allowance and gives back to the week only what Fable used in it. The pool spends a
 // weekly reset the moment every Claude account has used its week, and a Fable reset, or a weekly
 // one whose own week is used, the moment none has Fable left: before that, the room it gives
-// would only stand in for room other accounts already have, which then goes unused. A reset
-// refills the week without moving its end, and what is left at the end is lost, so one reset is
-// spent per dry spell: the one that gives back the most, then the one whose account's week ends
-// last. One whose own week ends within poolRunway is kept. In its last poolLastWeek a reset is
-// spent as soon as its own account is out, without waiting for the others, since one left for
-// its last hour may find a week that just turned over and give back little. A reset in its
-// last poolLastHour is spent whatever the pool holds.
+// would only stand in for room other accounts already have, which then goes unused. An account
+// has used its week when its reading reaches the weekly cutoff or when Anthropic refuses it until
+// its week comes back, whatever the reading says. A reset refills the week without moving its
+// end, and what is left at the end is lost, so one reset is spent per dry spell: the one that
+// gives back the most, then the one whose account's week ends last. In its last poolLastWeek a
+// reset is spent as soon as its own account is out, without waiting for the others, since one
+// left for its last hour may find a week that just turned over and give back little. A reset in
+// its last poolLastHour is spent whatever the pool holds.
 //
 // Anthropic lets some resets be used only at the weekly limit. Their holder takes new work
 // past the weekly cutoff, up to that limit, so the reset becomes usable; one whose holder
@@ -40,7 +41,6 @@ import (
 // poolClaimsFile, until Anthropic settles it, so retrying it can't spend a second reset.
 
 const (
-	poolRunway       = 12 * time.Hour
 	poolLastWeek     = 7 * 24 * time.Hour
 	poolLastHour     = time.Hour
 	poolFreshResets  = 2 * time.Minute
@@ -170,8 +170,8 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 		if !r.member() {
 			continue
 		}
-		weekLeft := !r.Known || r.week < r.weekCutoff || r.settling
-		fableLeft := !r.Known || r.week < r.weekCutoff && r.fable < r.fableCutoff || r.settling
+		weekLeft := !r.refused && (!r.Known || r.week < r.weekCutoff || r.settling)
+		fableLeft := !r.fableRefused && (!r.Known || r.week < r.weekCutoff && r.fable < r.fableCutoff || r.settling)
 		if weekLeft {
 			busy = append(busy, r.label())
 		}
@@ -198,7 +198,7 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 			continue
 		}
 		expires := when(*h.grant.ExpiresAt)
-		if h.grant.NeedsLimit && h.row.week < 100 {
+		if h.grant.NeedsLimit && h.row.week < 100 && !h.row.refused {
 			h.plan = fmt.Sprintf("Expires %s and only works at the weekly limit, so %s takes new sessions first to reach it.", expires, h.row.label())
 			continue
 		}
@@ -228,11 +228,9 @@ func (p *claudePoolState) planResetsLocked(rows []PoolRow, now time.Time) []pool
 				map[bool]string{true: "has", false: "have"}[one], map[bool]string{true: "its", false: "their"}[one], used)
 		case spent:
 			h.plan = fmt.Sprintf("Every account has used its %s, but another reset is being spent, so this one waits for the next time they all have.", used)
-		case h.row.WeekResetsAt-now.UnixMilli() >= poolRunway.Milliseconds():
+		default:
 			spend(h, fmt.Sprintf("every account had used its %s", used))
 			spent = true
-		default:
-			h.plan = fmt.Sprintf("Every account has used its %s, but this one's week comes back %s, too soon to use what the reset gives.", used, when(h.row.WeekResetsAt))
 		}
 		if h.grant.Fable {
 			h.plan = fmt.Sprintf("Fable reset, gives back ~%.0f weekly points (what Fable used this week). %s", h.row.GivesBack(h.grant), h.plan)

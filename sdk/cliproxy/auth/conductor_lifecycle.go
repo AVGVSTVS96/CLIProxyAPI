@@ -775,7 +775,7 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	m.mu.RLock()
 	store := m.store
 	m.mu.RUnlock()
-	if store == nil || auth == nil {
+	if store == nil || auth == nil || m.standby.Load() {
 		return nil
 	}
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {

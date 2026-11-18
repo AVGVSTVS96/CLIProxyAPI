@@ -70,6 +70,13 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 	go loop.run(ctx)
 }
 
+// SetStandby hands the credentials to another process (true) or takes them back (false).
+func (m *Manager) SetStandby(standby bool) {
+	if m != nil {
+		m.standby.Store(standby)
+	}
+}
+
 // StopAutoRefresh cancels the background refresh loop, if running.
 // It also stops the selector if it implements StoppableSelector.
 func (m *Manager) StopAutoRefresh() {
@@ -1203,6 +1210,9 @@ func (m *Manager) markRejectedAccessToken(id, failedAccessToken string) {
 func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAccessToken string, registrationEpoch uint64) (*Auth, error) {
 	if m == nil {
 		return nil, errors.New("auth manager is nil")
+	}
+	if m.standby.Load() {
+		return nil, errors.New("another process owns the credentials")
 	}
 	forceRefresh := isForceRefreshContext(ctx)
 	ctx = cliproxyexecutor.WithoutRequestProxyURL(ctx)

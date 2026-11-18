@@ -283,6 +283,23 @@ func (p *claudePoolState) readingLocked(auth *Auth, now time.Time) PoolReading {
 	return r
 }
 
+// refusedFor is how long the manager keeps auth cooled down after a quota refusal: on the
+// whole login, or on its Fable or other models as fable says. Only a refusal naming a reset
+// is longer than the five-hour window, so one past it is a refusal for the week or for
+// Fable's allowance.
+func refusedFor(auth *Auth, fable bool, now time.Time) time.Duration {
+	var until time.Time
+	if auth.Quota.Exceeded && !fable {
+		until = auth.Quota.NextRecoverAt
+	}
+	for model, state := range auth.ModelStates {
+		if state != nil && state.Quota.Exceeded && isFable(model) == fable && state.Quota.NextRecoverAt.After(until) {
+			until = state.Quota.NextRecoverAt
+		}
+	}
+	return until.Sub(now)
+}
+
 // PoolRow is one account's standing for new work, in rank order.
 type PoolRow struct {
 	Cloud         *PoolCredit `json:"cloud"`
@@ -322,6 +339,9 @@ type PoolRow struct {
 	fableCutoff float64
 	weekRoom    float64
 	settling    bool
+	// refused and fableRefused are set while Anthropic refuses the account until its week,
+	// or Fable's allowance, comes back.
+	refused, fableRefused bool
 }
 
 // workingLocked counts the account's working sessions, and their five-hour load with
@@ -402,6 +422,8 @@ func (p *claudePoolState) rankLocked(cfg config.PoolConfig, auths []*Auth, now t
 			}
 			row.fable = row.Fable.Used
 		}
+		row.refused = refusedFor(auth, false, now) > 5*time.Hour
+		row.fableRefused = row.refused || refusedFor(auth, true, now) > 5*time.Hour
 		row.settling = a.spent != nil && a.spent.fable && now.UnixMilli() < a.spent.until && row.week >= a.spent.week
 		row.weekCutoff, row.fableCutoff = cfg.WeeklyCutoff, cfg.WeeklyCutoff
 		for _, reset := range a.resets {
@@ -705,6 +727,9 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 		account             string
 		usage, resets, plan bool
 	}
+	if m != nil && m.standby.Load() {
+		return
+	}
 	var jobs []job
 	pooling := m.pooling()
 	p.mu.Lock()
@@ -724,7 +749,6 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 		}
 		j := job{auth: auth, account: id,
 			usage: now.UnixMilli()-a.reading.At > poolStaleAfter.Milliseconds() ||
-				auth.Quota.Exceeded && now.UnixMilli()-a.resetsAt > poolFreshResets.Milliseconds() ||
 				a.cloud != nil && now.UnixMilli()-a.cloud.SampledAt > poolCloudEvery.Milliseconds(),
 			resets: now.UnixMilli()-a.resetsAt > poolResetsEvery.Milliseconds(),
 			plan:   a.plan == nil || now.UnixMilli()-a.plan.At > poolPlanEvery.Milliseconds()}

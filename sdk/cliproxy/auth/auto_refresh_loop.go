@@ -290,6 +290,10 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 		l.upsert(authID, next)
 		return
 	}
+	if manager.standby.Load() {
+		l.upsert(authID, now.Add(refreshCheckInterval))
+		return
+	}
 
 	if exec == nil {
 		l.upsert(authID, now.Add(l.interval))

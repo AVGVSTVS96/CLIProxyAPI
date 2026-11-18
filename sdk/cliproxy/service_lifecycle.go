@@ -95,6 +95,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.registerPluginAuthParser()
 	if s.coreManager != nil && !homeEnabled {
+		s.coreManager.SetStandby(handoff.Inherited())
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
@@ -316,14 +317,18 @@ func (s *Service) handOff() error {
 	if errFile != nil {
 		return errFile
 	}
+	// The new process reads the credentials as this one leaves them and owns them from then on.
+	s.coreManager.SetStandby(true)
 	successor, errBegin := handoff.Begin(file)
 	_ = file.Close()
 	if errBegin != nil {
+		s.coreManager.SetStandby(false)
 		return errBegin
 	}
 	log.Info("handoff: started the new process")
 	if errReady := successor.Ready(2 * time.Minute); errReady != nil {
 		successor.Abort()
+		s.coreManager.SetStandby(false)
 		return errReady
 	}
 	s.server.StopAccepting()
@@ -540,6 +545,7 @@ func (s *Service) startModelCatalogUpdaters(ctx context.Context) {
 // restoreRunState picks up what the last run handed over: session bindings and the
 // sessions it was keeping warm.
 func (s *Service) restoreRunState() {
+	s.coreManager.SetStandby(false)
 	s.restoreSessionBindings()
 	s.server.RestoreCacheWarm()
 }

@@ -74,11 +74,52 @@ func TestResetSpendsThoughAnotherWeekComesBackSoon(t *testing.T) {
 	}
 }
 
-func TestResetWaitsWhenItsOwnWeekIsAlmostOver(t *testing.T) {
+func TestResetSpendsWhenThePoolIsDryThoughItsOwnWeekIsAlmostOver(t *testing.T) {
 	resetPool(t)
 	holdReset("holder", 40*24*time.Hour)
-	if plan := planFor(poolAuth("holder", 0, 100, 3*time.Hour), poolAuth("b", 0, 99, 60*time.Hour)); plan.why != "" {
-		t.Fatalf("plan = %+v, want it kept: the holder's week comes back in 3 hours", plan)
+	if plan := planFor(poolAuth("holder", 0, 100, 3*time.Hour), poolAuth("b", 0, 99, 60*time.Hour)); plan.why == "" {
+		t.Fatalf("plan = %+v, want it spent: every account is out, so waiting 3 hours for the holder's week leaves Claude down", plan)
+	}
+}
+
+// refuse cools auth down for model the way the manager does after Anthropic refuses it.
+func refuse(auth *Auth, model string, until time.Duration) *Auth {
+	quota := QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: time.Now().Add(until)}
+	if model == "" {
+		quota.Reason = "credential_quota"
+		auth.Quota.Exceeded, auth.Quota.Reason, auth.Quota.NextRecoverAt = quota.Exceeded, quota.Reason, quota.NextRecoverAt
+		return auth
+	}
+	if auth.ModelStates == nil {
+		auth.ModelStates = map[string]*ModelState{}
+	}
+	auth.ModelStates[model] = &ModelState{Unavailable: true, Quota: quota}
+	return auth
+}
+
+func TestResetSpendsWhenAnthropicRefusesEveryAccountForItsWeek(t *testing.T) {
+	resetPool(t)
+	ConfigurePool(config.PoolConfig{StateDir: t.TempDir(), WeeklyCutoff: 100})
+	holdReset("holder", 40*24*time.Hour)
+	holder := refuse(poolAuth("holder", 0, 99, 60*time.Hour), "", 60*time.Hour)
+	b := refuse(poolAuth("b", 0, 99, 62*time.Hour), "claude-opus-5-5", 62*time.Hour)
+	if plan := planFor(holder, b); plan.why == "" {
+		t.Fatalf("plan = %+v, want it spent: Anthropic refuses both accounts until their weeks come back, though they read 99%%", plan)
+	}
+}
+
+func TestResetWaitsWhileARefusalIsOnlyForFiveHoursOrFable(t *testing.T) {
+	resetPool(t)
+	ConfigurePool(config.PoolConfig{StateDir: t.TempDir(), WeeklyCutoff: 100})
+	holdReset("holder", 40*24*time.Hour)
+	holder := refuse(poolAuth("holder", 0, 99, 60*time.Hour), "", 60*time.Hour)
+	for name, b := range map[string]*Auth{
+		"five-hour": refuse(poolAuth("b", 100, 60, 62*time.Hour), "", 3*time.Hour),
+		"fable":     refuse(poolAuth("b", 0, 60, 62*time.Hour), "claude-fable-5-2", 62*time.Hour),
+	} {
+		if plan := planFor(holder, b); plan.why != "" {
+			t.Fatalf("%s: plan = %+v, want the weekly reset kept while b has week left", name, plan)
+		}
 	}
 }
 
@@ -187,27 +228,6 @@ func dryPool(t *testing.T, api *resetAPI) (string, []*Auth) {
 	holdReset("holder", 40*24*time.Hour)
 	claudePool.account("holder").resets[0].Left = 2
 	return dir, []*Auth{holder, other}
-}
-
-func TestQuotaRejectionRefreshesUsageBeforeWaitingForAReset(t *testing.T) {
-	resetPool(t)
-	api := &resetAPI{usage: staleUsage}
-	claudePool.client = &http.Client{Transport: api}
-	auth := poolAuth("blocked", 0, 99, 60*time.Hour)
-	auth.Metadata["access_token"] = "token"
-	auth.Quota.Exceeded = true
-	a := claudePool.account("blocked")
-	a.resetsAt = time.Now().Add(-3 * time.Minute).UnixMilli()
-	a.plan = &PoolPlan{At: time.Now().UnixMilli()}
-	m := NewManager(nil, &QuotaSelector{}, nil)
-	claudePool.sample(context.Background(), m, []*Auth{auth})
-	if api.requests != 1 || a.reading.Week == nil || a.reading.Week.Used != 100 {
-		t.Fatalf("requests = %d, reading = %+v, want a fresh exhausted week despite the recent 99%% header", api.requests, a.reading)
-	}
-	claudePool.sample(context.Background(), m, []*Auth{auth})
-	if api.requests != 1 {
-		t.Fatalf("requests = %d, want the fresh usage read reused", api.requests)
-	}
 }
 
 func TestSpendResetClaimsOnceAndTellsTheCommand(t *testing.T) {

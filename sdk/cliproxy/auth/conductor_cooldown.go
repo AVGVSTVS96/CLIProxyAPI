@@ -668,7 +668,7 @@ func (m *Manager) persistCooldownStatesLocked(ctx context.Context) {
 }
 
 func (m *Manager) persistCooldownStatesToLocked(ctx context.Context, store CooldownStateStore) bool {
-	if m == nil || store == nil {
+	if m == nil || store == nil || m.standby.Load() {
 		return true
 	}
 	if ctx == nil {
