@@ -724,6 +724,7 @@ func (p *claudePoolState) sample(ctx context.Context, m *Manager, auths []*Auth)
 		}
 		j := job{auth: auth, account: id,
 			usage: now.UnixMilli()-a.reading.At > poolStaleAfter.Milliseconds() ||
+				auth.Quota.Exceeded && now.UnixMilli()-a.resetsAt > poolFreshResets.Milliseconds() ||
 				a.cloud != nil && now.UnixMilli()-a.cloud.SampledAt > poolCloudEvery.Milliseconds(),
 			resets: now.UnixMilli()-a.resetsAt > poolResetsEvery.Milliseconds(),
 			plan:   a.plan == nil || now.UnixMilli()-a.plan.At > poolPlanEvery.Milliseconds()}

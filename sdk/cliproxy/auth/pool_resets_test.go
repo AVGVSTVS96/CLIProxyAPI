@@ -189,6 +189,27 @@ func dryPool(t *testing.T, api *resetAPI) (string, []*Auth) {
 	return dir, []*Auth{holder, other}
 }
 
+func TestQuotaRejectionRefreshesUsageBeforeWaitingForAReset(t *testing.T) {
+	resetPool(t)
+	api := &resetAPI{usage: staleUsage}
+	claudePool.client = &http.Client{Transport: api}
+	auth := poolAuth("blocked", 0, 99, 60*time.Hour)
+	auth.Metadata["access_token"] = "token"
+	auth.Quota.Exceeded = true
+	a := claudePool.account("blocked")
+	a.resetsAt = time.Now().Add(-3 * time.Minute).UnixMilli()
+	a.plan = &PoolPlan{At: time.Now().UnixMilli()}
+	m := NewManager(nil, &QuotaSelector{}, nil)
+	claudePool.sample(context.Background(), m, []*Auth{auth})
+	if api.requests != 1 || a.reading.Week == nil || a.reading.Week.Used != 100 {
+		t.Fatalf("requests = %d, reading = %+v, want a fresh exhausted week despite the recent 99%% header", api.requests, a.reading)
+	}
+	claudePool.sample(context.Background(), m, []*Auth{auth})
+	if api.requests != 1 {
+		t.Fatalf("requests = %d, want the fresh usage read reused", api.requests)
+	}
+}
+
 func TestSpendResetClaimsOnceAndTellsTheCommand(t *testing.T) {
 	api := &resetAPI{usage: staleUsage}
 	dir, auths := dryPool(t, api)
